@@ -2,7 +2,7 @@ name: Run Retail Paper Bot Daily
 
 on:
   schedule:
-    - cron: '0 21 * * 1-5'
+    - cron: '08 21 * * 1-5'
   workflow_dispatch:
 
 jobs:
