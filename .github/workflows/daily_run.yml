@@ -27,6 +27,9 @@ jobs:
       - name: Run Paper Bot Engine
         run: python retail_paper_bot.py
 
+      - name: Evaluate Metrics
+        run: python evaluate_metrics.py
+        
       - name: Commit and Push Updated Logs
         run: |
           git config --local user.email "action@github.com"
