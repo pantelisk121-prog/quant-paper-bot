@@ -33,8 +33,13 @@ def calculate_metrics():
     # 2. Evaluate Daily Equity Curve
     if os.path.exists('daily_performance.csv'):
         perf_df = pd.read_csv('daily_performance.csv')
-        if len(perf_df) > 1:
-            equity = perf_df['total_equity']
+        
+        # Check for matching equity column names flexibly
+        possible_cols = ['total_equity', 'portfolio_value', 'equity', 'total_value', 'Portfolio_Value']
+        equity_col = next((col for col in possible_cols if col in perf_df.columns), None)
+        
+        if equity_col and len(perf_df) > 1:
+            equity = perf_df[equity_col]
             daily_returns = equity.pct_change().dropna()
 
             # Peak-to-trough drawdown
@@ -50,8 +55,10 @@ def calculate_metrics():
             print(f"Daily Snapshots Logged: {len(perf_df)}")
             print(f"Max Drawdown:           {max_dd:.2f}%")
             print(f"Annualized Sharpe:      {sharpe:.2f}")
+        elif equity_col and len(perf_df) <= 1:
+            print("Daily Performance:      1 snapshot recorded. Need >= 2 days to compute returns.")
         else:
-            print("Daily Performance:      Only 1 snapshot recorded. Need >= 2 days to compute returns.")
+            print(f"Daily Performance:      Logged columns found: {list(perf_df.columns)}")
     else:
         print("Daily Performance:      daily_performance.csv not found.")
 
