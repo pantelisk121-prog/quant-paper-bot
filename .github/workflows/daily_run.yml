@@ -2,13 +2,14 @@ name: Run Retail Paper Bot Daily
 
 on:
   schedule:
-    # Runs at 21:00 UTC (5:00 PM EST) Monday through Friday
     - cron: '0 21 * * 1-5'
-  workflow_dispatch: # Allows manual trigger anytime
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
