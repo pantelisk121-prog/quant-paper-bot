@@ -31,6 +31,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          git add portfolio_state.json paper_trades.csv daily_performance.csv
+          git add -A
           git commit -m "Auto-update paper portfolio logs [skip ci]" || exit 0
           git push
