@@ -1,238 +1,184 @@
-import os
-import json
-import datetime
-import pandas as pd
-import numpy as np
 import yfinance as yf
+import pandas as pd
 import statsmodels.api as sm
-from statsmodels.regression.rolling import RollingOLS
+import numpy as np
+import json
+import os
+from datetime import datetime
 
-# ==========================================
-# CONFIGURATION & PARAMETERS
-# ==========================================
-INITIAL_CAPITAL = 10000.0  # Starting virtual capital ($10,000)
-TRANSACTION_COST = 0.0005   # 5 bps (0.05%) slippage/fee per trade
-RISK_FREE_RATE = 0.045      # 4.5% yield on idle cash
+# --- STRATEGY CONFIGURATION ---
+PAIRS = [('HD', 'LOW'), ('WMT', 'TGT')]
+Z_ENTRY = 1.75
+Z_EXIT = 0.50
+Z_STOP = 4.0
+VIX_MAX = 30.0
+SLIPPAGE = 0.0005  # 0.05% friction
+LOOKBACK = 60
+INITIAL_CAPITAL = 100000.0
 
-STATE_FILE = "portfolio_state.json"
-TRADES_LOG = "paper_trades.csv"
-PERF_LOG = "daily_performance.csv"
+# --- FILE PATHS ---
+STATE_FILE = 'portfolio_state.json'
+TRADES_FILE = 'paper_trades.csv'
+PERF_FILE = 'daily_performance.csv'
 
-PAIRS = {
-    1: {'y': 'HD', 'x': 'LOW', 'threshold': 1.75},
-    2: {'y': 'WMT', 'x': 'TGT', 'threshold': 1.75}
-}
-TICKERS = ['HD', 'LOW', 'WMT', 'TGT', 'SPY', '^VIX']
-
-# ==========================================
-# RESILIENT DATA FETCHING (Yahoo + Stooq Fallback)
-# ==========================================
-def fetch_single_ticker(ticker):
-    """Fetches historical daily close series with fallback logic to prevent IP blocks."""
-    # 1. Try yfinance single ticker query
-    try:
-        df = yf.Ticker(ticker).history(period="6mo")
-        if not df.empty and "Close" in df.columns:
-            s = df["Close"]
-            s.name = ticker
-            return s
-    except Exception:
-        pass
-
-    # 2. Fallback to Stooq free CSV data feed
-    try:
-        stooq_symbol = ticker.replace("^", "").lower()
-        if not stooq_symbol.endswith(".us"):
-            stooq_symbol += ".us"
-        url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
-        stooq_df = pd.read_csv(url)
-        if not stooq_df.empty and "Close" in stooq_df and "Date" in stooq_df:
-            stooq_df["Date"] = pd.to_datetime(stooq_df["Date"])
-            stooq_df.set_index("Date", inplace=True)
-            stooq_df.sort_index(inplace=True)
-            s = stooq_df["Close"].tail(130)
-            s.name = ticker
-            return s
-    except Exception:
-        pass
-
-    return pd.Series(dtype=float, name=ticker)
-
-def load_market_data(tickers):
-    """Builds composite price matrix across all tickers."""
-    series_list = []
-    for ticker in tickers:
-        s = fetch_single_ticker(ticker)
-        if not s.empty:
-            series_list.append(s)
-        else:
-            print(f"Warning: Failed to fetch data for {ticker}")
-
-    if not series_list:
-        raise ValueError("Failed to retrieve market data for all symbols.")
-
-    df = pd.concat(series_list, axis=1).ffill().bfill().dropna()
-    if "^VIX" in df.columns:
-        df = df.rename(columns={'^VIX': 'VIX'})
-    return df
-
-# ==========================================
-# STATE MANAGEMENT
-# ==========================================
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            return json.load(f)
-    return {
-        "cash": INITIAL_CAPITAL,
-        "positions": {"HD": 0.0, "LOW": 0.0, "WMT": 0.0, "TGT": 0.0, "SPY": 0.0},
-        "last_run": None
-    }
+        try:
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+                if 'cash' not in state: state['cash'] = INITIAL_CAPITAL
+                if 'positions' not in state: state['positions'] = {}
+                return state
+        except:
+            pass
+    return {'cash': INITIAL_CAPITAL, 'positions': {}}
 
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
         json.dump(state, f, indent=4)
 
-# ==========================================
-# QUANT ENGINE & SIGNAL CALCULATIONS
-# ==========================================
-def run_strategy_engine():
-    print("Fetching market data...")
-    data = load_market_data(TICKERS)
-    current_prices = data.iloc[-1].to_dict()
-    vix_current = current_prices.get('VIX', 20.0)
-
-    window = 60
-    conviction_scores = {}
-    signals = {}
-
-    for i, pair in PAIRS.items():
-        y, x = pair['y'], pair['x']
-
-        # Rolling OLS (lagged 1 day to prevent lookahead bias)
-        X = sm.add_constant(data[x])
-        model = RollingOLS(data[y], X, window=window).fit()
-        alpha = model.params['const'].shift(1)
-        beta = model.params[x].shift(1)
-
-        spread = data[y] - (beta * data[x] + alpha)
-        z_series = (spread - spread.rolling(window).mean()) / spread.rolling(window).std()
-        z_current = z_series.iloc[-1]
-
-        threshold = pair['threshold']
-        if abs(z_current) > threshold:
-            sig = -np.sign(z_current)
-        elif abs(z_current) < 0.5:
-            sig = 0.0
-        else:
-            sig = np.nan
-
-        # Hard stop (|Z| > 4.0) & VIX Kill Switch (> 30)
-        if abs(z_current) > 4.0 or vix_current > 30:
-            sig = 0.0
-
-        signals[i] = sig
-        conviction_scores[i] = abs(z_current) if sig != 0.0 and not np.isnan(sig) else 0.0
-
-    # SPY Hedge Signal
-    if vix_current > 40:
-        spy_signal = 1.0
-    elif vix_current < 25:
-        spy_signal = 0.0
-    else:
-        spy_signal = np.nan
-
-    spy_conviction = 3.0 if spy_signal == 1.0 else 0.0
-
-    return current_prices, signals, conviction_scores, spy_signal, spy_conviction
-
-# ==========================================
-# EXECUTION & LOGGING ENGINE
-# ==========================================
-def execute_paper_trading():
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state = load_state()
-    prices, signals, conviction_scores, spy_signal, spy_conviction = run_strategy_engine()
-
-    portfolio_value = state['cash']
-    for ticker, shares in state['positions'].items():
-        portfolio_value += shares * prices.get(ticker, 0.0)
-
-    print(f"\n--- ACCOUNT STATUS ({today_str}) ---")
-    print(f"Total Portfolio Value: ${portfolio_value:,.2f}")
-    print(f"Available Cash:        ${state['cash']:,.2f}")
-    print(f"Current VIX Level:     {prices.get('VIX', 0.0):.2f}")
-
-    total_conviction = sum(conviction_scores.values()) + spy_conviction
-    target_dollar_alloc = {t: 0.0 for t in ['HD', 'LOW', 'WMT', 'TGT', 'SPY']}
-
-    if total_conviction > 0:
-        for i, pair in PAIRS.items():
-            if conviction_scores[i] > 0:
-                weight = conviction_scores[i] / total_conviction
-                allocated_cash = portfolio_value * weight
-
-                sig = signals[i]
-                target_dollar_alloc[pair['y']] += sig * (allocated_cash * 0.5)
-                target_dollar_alloc[pair['x']] += -sig * (allocated_cash * 0.5)
-
-        if spy_conviction > 0:
-            spy_weight = spy_conviction / total_conviction
-            target_dollar_alloc['SPY'] = portfolio_value * spy_weight
-
-    trades_executed = []
-    for ticker in ['HD', 'LOW', 'WMT', 'TGT', 'SPY']:
-        current_price = prices.get(ticker, 0.0)
-        if current_price <= 0:
-            continue
-        target_dollars = target_dollar_alloc[ticker]
-        target_shares = target_dollars / current_price
-
-        current_shares = state['positions'].get(ticker, 0.0)
-        share_delta = target_shares - current_shares
-
-        if abs(share_delta) > 0.001:
-            trade_cost = abs(share_delta) * current_price * TRANSACTION_COST
-            capital_required = share_delta * current_price
-
-            state['cash'] -= (capital_required + trade_cost)
-            state['positions'][ticker] = target_shares
-
-            trade_record = {
-                "Timestamp": today_str,
-                "Ticker": ticker,
-                "Action": "BUY" if share_delta > 0 else "SELL",
-                "Shares": round(share_delta, 4),
-                "Price": round(current_price, 2),
-                "Slippage_Fee": round(trade_cost, 4),
-                "New_Position_Shares": round(target_shares, 4)
-            }
-            trades_executed.append(trade_record)
-            print(f"ORDER FILLED: {trade_record['Action']} {abs(share_delta):.2f} shares of {ticker} @ ${current_price:.2f}")
-
-    state['last_run'] = today_str
-    save_state(state)
-
-    if trades_executed:
-        df_trades = pd.DataFrame(trades_executed)
-        header = not os.path.exists(TRADES_LOG)
-        df_trades.to_csv(TRADES_LOG, mode='a', index=False, header=header)
-
-    perf_record = {
-        "Date": today_str,
-        "Total_Equity": round(portfolio_value, 2),
-        "Cash": round(state['cash'], 2),
-        "HD_Shares": round(state['positions']['HD'], 4),
-        "LOW_Shares": round(state['positions']['LOW'], 4),
-        "WMT_Shares": round(state['positions']['WMT'], 4),
-        "TGT_Shares": round(state['positions']['TGT'], 4),
-        "SPY_Shares": round(state['positions']['SPY'], 4)
+def log_trade(pair_name, action, stock1, stock2, qty1, qty2, price1, price2, pnl=0.0):
+    trade_data = {
+        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'pair': pair_name,
+        'action': action,
+        'stock1': stock1,
+        'stock2': stock2,
+        'qty1': round(qty1, 4),
+        'qty2': round(qty2, 4),
+        'price1': round(price1, 2),
+        'price2': round(price2, 2),
+        'pnl': round(pnl, 2)
     }
-    df_perf = pd.DataFrame([perf_record])
-    perf_header = not os.path.exists(PERF_LOG)
-    df_perf.to_csv(PERF_LOG, mode='a', index=False, header=perf_header)
+    df = pd.DataFrame([trade_data])
+    if os.path.exists(TRADES_FILE):
+        df.to_csv(TRADES_FILE, mode='a', header=False, index=False)
+    else:
+        df.to_csv(TRADES_FILE, index=False)
 
-    print("Paper engine run complete. State updated and logged.")
+def calculate_z_score(stock1, stock2):
+    # Fetch 90 days to guarantee at least 60 valid trading days
+    data = yf.download([stock1, stock2], period="90d", progress=False)['Close']
+    data = data.dropna()
+    if len(data) < LOOKBACK:
+        return None, None
+    
+    data = data.tail(LOOKBACK)
+    y = data[stock1]
+    X = sm.add_constant(data[stock2])
+    
+    model = sm.OLS(y, X).fit()
+    spread = y - model.predict(X)
+    
+    z_score = (spread.iloc[-1] - spread.mean()) / spread.std()
+    return z_score, data.iloc[-1]
+
+def main():
+    print("Fetching VIX data...")
+    vix_data = yf.download('^VIX', period="5d", progress=False)['Close']
+    vix = vix_data.dropna().iloc[-1]
+    print(f"Current VIX: {vix:.2f}")
+    if vix > VIX_MAX:
+        print("VIX circuit breaker triggered (>30). Halting trading operations.")
+        return
+
+    state = load_state()
+    portfolio_value = state['cash']
+    z_scores_log = {}
+    
+    print("\n==================================================")
+    print("             DAILY PAIR Z-SCORE MONITOR           ")
+    print("==================================================")
+    
+    for s1, s2 in PAIRS:
+        pair_name = f"{s1}_{s2}"
+        z, latest_prices = calculate_z_score(s1, s2)
+        if z is None:
+            continue
+            
+        z_scores_log[pair_name] = z
+        p1 = latest_prices[s1]
+        p2 = latest_prices[s2]
+        
+        print(f"  {s1} / {s2} Z-Score: {z:+.2f}  |  Target: ±{Z_ENTRY}  (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
+        
+        # --- EXIT LOGIC ---
+        if pair_name in state['positions']:
+            pos = state['positions'][pair_name]
+            val1 = pos['qty1'] * p1
+            val2 = pos['qty2'] * p2
+            pos_value = val1 + val2
+            portfolio_value += pos_value
+            
+            if abs(z) <= Z_EXIT or abs(z) >= Z_STOP:
+                action = 'EXIT (Take Profit)' if abs(z) <= Z_EXIT else 'EXIT (Stop Loss)'
+                print(f"  -> {action} Triggered for {pair_name}")
+                
+                exit_val1 = val1 * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
+                exit_val2 = val2 * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
+                total_exit_val = exit_val1 + exit_val2
+                
+                entry_val = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
+                pnl = total_exit_val - entry_val
+                
+                state['cash'] += total_exit_val
+                log_trade(pair_name, action, s1, s2, pos['qty1'], pos['qty2'], p1, p2, pnl)
+                del state['positions'][pair_name]
+                
+        # --- ENTRY LOGIC ---
+        else:
+            if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
+                print(f"  -> ENTRY Triggered for {pair_name}")
+                allocation = INITIAL_CAPITAL * 0.40  # 40% per pair
+                
+                if z > 0:
+                    w1, w2 = -0.5, 0.5  # Short s1, Long s2
+                else:
+                    w1, w2 = 0.5, -0.5  # Long s1, Short s2
+                    
+                alloc1, alloc2 = allocation * w1, allocation * w2
+                
+                entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
+                entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
+                
+                qty1 = alloc1 / entry_p1
+                qty2 = alloc2 / entry_p2
+                
+                cost = (qty1 * entry_p1) + (qty2 * entry_p2)
+                state['cash'] -= cost
+                
+                state['positions'][pair_name] = {
+                    'qty1': qty1,
+                    'qty2': qty2,
+                    'entry_price1': entry_p1,
+                    'entry_price2': entry_p2
+                }
+                portfolio_value += (qty1 * p1 + qty2 * p2)
+                log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
+    
+    print("==================================================\n")
+
+    save_state(state)
+    
+    # --- LOG DAILY PERFORMANCE ---
+    log_entry = {
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'total_equity': round(portfolio_value, 2),
+        'cash': round(state['cash'], 2),
+        'z_hd_low': round(z_scores_log.get('HD_LOW', 0.0), 4),
+        'z_wmt_tgt': round(z_scores_log.get('WMT_TGT', 0.0), 4)
+    }
+    
+    if os.path.exists(PERF_FILE):
+        perf_df = pd.read_csv(PERF_FILE)
+        perf_df = pd.concat([perf_df, pd.DataFrame([log_entry])], ignore_index=True)
+    else:
+        perf_df = pd.DataFrame([log_entry])
+        
+    perf_df.drop_duplicates(subset=['date'], keep='last', inplace=True)
+    perf_df.to_csv(PERF_FILE, index=False)
+    
+    print(f"Daily execution complete. Total Portfolio Value: ${portfolio_value:,.2f}")
 
 if __name__ == "__main__":
-    execute_paper_trading()
+    main()
