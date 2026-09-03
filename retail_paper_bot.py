@@ -57,7 +57,6 @@ def log_trade(pair_name, action, stock1, stock2, qty1, qty2, price1, price2, pnl
         df.to_csv(TRADES_FILE, index=False)
 
 def calculate_z_score(stock1, stock2):
-    # Fetch 90 days to guarantee at least 60 valid trading days
     data = yf.download([stock1, stock2], period="90d", progress=False)['Close']
     data = data.dropna()
     if len(data) < LOOKBACK:
@@ -70,7 +69,6 @@ def calculate_z_score(stock1, stock2):
     model = sm.OLS(y, X).fit()
     spread = y - model.predict(X)
     
-    # np.ravel flattens any Pandas object, [0] gets the first element, float() standardizes it
     raw_z = (spread.iloc[-1] - spread.mean()) / spread.std()
     z_score = float(np.ravel(raw_z)[0])
     
@@ -84,11 +82,9 @@ def calculate_z_score(stock1, stock2):
 def main():
     print("Fetching VIX data...")
     vix_data = yf.download('^VIX', period="5d", progress=False)['Close']
-    
-    # Safely extract standard float to prevent Series.__format__ TypeError
     vix = float(np.ravel(vix_data.dropna())[-1])
     
-    print(f"Current VIX: {vix:.2f}")
+    print(f"Current VIX (Fear Factor): {vix:.2f}")
     if vix > VIX_MAX:
         print("VIX circuit breaker triggered (>30). Halting trading operations.")
         return
@@ -171,13 +167,26 @@ def main():
 
     save_state(state)
     
+    # Extract current share quantities for logging (0.0 if not holding)
+    hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0)
+    low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0)
+    wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0)
+    tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0)
+    spy_shares = 0.0
+
     # --- LOG DAILY PERFORMANCE ---
     log_entry = {
         'date': datetime.now().strftime('%Y-%m-%d'),
         'total_equity': round(float(portfolio_value), 2),
         'cash': round(float(state['cash']), 2),
+        'HD_Shares': round(float(hd_shares), 4),
+        'LOW_Shares': round(float(low_shares), 4),
+        'WMT_Shares': round(float(wmt_shares), 4),
+        'TGT_Shares': round(float(tgt_shares), 4),
+        'SPY_Shares': round(float(spy_shares), 4),
         'z_hd_low': round(float(z_scores_log.get('HD_LOW', 0.0)), 4),
-        'z_wmt_tgt': round(float(z_scores_log.get('WMT_TGT', 0.0)), 4)
+        'z_wmt_tgt': round(float(z_scores_log.get('WMT_TGT', 0.0)), 4),
+        'vix': round(float(vix), 2)
     }
     
     if os.path.exists(PERF_FILE):
