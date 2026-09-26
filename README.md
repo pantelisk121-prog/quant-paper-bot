@@ -2,6 +2,8 @@
 
 This repository houses a mean-reversion statistical arbitrage trading framework targeting highly correlated retail equities (HD/LOW and WMT/TGT). The project spans a 5-year iterative backtested model built in Google Colab, culminating in a live, fully automated paper-trading pipeline executing daily via cloud infrastructure.
 
+Linked here is the code to my initial 5-yr back-test on Google Colab: https://colab.research.google.com/drive/1sYzJFaVPMUsmY8VQJ2mDjHrf0jYR2Kq1?usp=sharing 
+
 Linked here is my Whitepaper, providing a more in-depth description to the process and evolution of my project: https://docs.google.com/document/d/1-H1jHi9Co_-EpBGxrbBVoGRzHcz0qr1WNsdtOnAL-Hc/edit?usp=sharing 
 
 ## Google Colab Backtest Evolution & Diagnostic Journey
