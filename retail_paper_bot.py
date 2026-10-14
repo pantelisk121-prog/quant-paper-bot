@@ -14,7 +14,7 @@ Z_STOP = 4.0
 VIX_MAX = 30.0
 SLIPPAGE = 0.0005  # 0.05% friction
 LOOKBACK = 60
-INITIAL_CAPITAL = 100000.0
+INITIAL_CAPITAL = 10000.0  # Matches $10,000 baseline
 
 # --- FILE PATHS ---
 STATE_FILE = 'portfolio_state.json'
@@ -90,13 +90,15 @@ def main():
         return
 
     state = load_state()
-    portfolio_value = state['cash']
     z_scores_log = {}
+    prices_log = {}
+    new_entries = []
     
     print("\n==================================================")
     print("             DAILY PAIR Z-SCORE MONITOR           ")
     print("==================================================")
     
+    # --- PASS 1: FETCH DATA & PROCESS EXITS FIRST ---
     for s1, s2 in PAIRS:
         pair_name = f"{s1}_{s2}"
         z, latest_prices = calculate_z_score(s1, s2)
@@ -104,18 +106,15 @@ def main():
             continue
             
         z_scores_log[pair_name] = z
-        p1 = latest_prices[s1]
-        p2 = latest_prices[s2]
+        prices_log[pair_name] = (s1, s2, latest_prices[s1], latest_prices[s2])
+        p1, p2 = latest_prices[s1], latest_prices[s2]
         
         print(f"  {s1} / {s2} Z-Score: {z:+.2f}  |  Target: ±{Z_ENTRY}  (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
         
-        # --- EXIT LOGIC ---
         if pair_name in state['positions']:
             pos = state['positions'][pair_name]
             val1 = pos['qty1'] * p1
             val2 = pos['qty2'] * p2
-            pos_value = val1 + val2
-            portfolio_value += pos_value
             
             if abs(z) <= Z_EXIT or abs(z) >= Z_STOP:
                 action = 'EXIT (Take Profit)' if abs(z) <= Z_EXIT else 'EXIT (Stop Loss)'
@@ -131,39 +130,91 @@ def main():
                 state['cash'] += total_exit_val
                 log_trade(pair_name, action, s1, s2, pos['qty1'], pos['qty2'], p1, p2, pnl)
                 del state['positions'][pair_name]
-                
-        # --- ENTRY LOGIC ---
         else:
             if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
-                print(f"  -> ENTRY Triggered for {pair_name}")
-                allocation = INITIAL_CAPITAL * 0.40  # 40% per pair
+                new_entries.append(pair_name)
+
+    # --- PASS 2: PROCESS ENTRIES & DYNAMIC CONVICTION ALLOCATION ---
+    if new_entries:
+        active_pairs = list(state['positions'].keys()) + new_entries
+        total_z = sum(abs(z_scores_log[p]) for p in active_pairs)
+        
+        # If an existing pair is already open at 100%, trim it proportionally to free capital for the 2nd pair
+        for open_pair in list(state['positions'].keys()):
+            pos = state['positions'][open_pair]
+            s1, s2, p1, p2 = prices_log[open_pair]
+            target_weight = abs(z_scores_log[open_pair]) / total_z
+            current_weight = pos.get('weight', 1.0)
+            
+            if target_weight < current_weight:
+                keep_ratio = target_weight / current_weight
+                close_ratio = 1.0 - keep_ratio
+                print(f"  -> REBALANCING {open_pair} to {target_weight*100:.1f}% conviction weight")
                 
-                if z > 0:
-                    w1, w2 = -0.5, 0.5  # Short s1, Long s2
-                else:
-                    w1, w2 = 0.5, -0.5  # Long s1, Short s2
-                    
-                alloc1, alloc2 = allocation * w1, allocation * w2
+                closed_qty1 = pos['qty1'] * close_ratio
+                closed_qty2 = pos['qty2'] * close_ratio
                 
-                entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
-                entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
+                exit_val1 = (closed_qty1 * p1) * (1 - SLIPPAGE if closed_qty1 > 0 else 1 + SLIPPAGE)
+                exit_val2 = (closed_qty2 * p2) * (1 - SLIPPAGE if closed_qty2 > 0 else 1 + SLIPPAGE)
+                total_exit_val = exit_val1 + exit_val2
                 
-                qty1 = alloc1 / entry_p1
-                qty2 = alloc2 / entry_p2
+                entry_val = (closed_qty1 * pos['entry_price1']) + (closed_qty2 * pos['entry_price2'])
+                pnl = total_exit_val - entry_val
                 
-                cost = (qty1 * entry_p1) + (qty2 * entry_p2)
-                state['cash'] -= cost
+                state['cash'] += total_exit_val
+                pos['qty1'] *= keep_ratio
+                pos['qty2'] *= keep_ratio
+                pos['weight'] = target_weight
+                log_trade(open_pair, 'REBALANCE (Trim)', s1, s2, closed_qty1, closed_qty2, p1, p2, pnl)
+
+        # Calculate current total equity available to size new entries
+        current_equity = state['cash']
+        for open_pair, pos in state['positions'].items():
+            _, _, op1, op2 = prices_log[open_pair]
+            current_equity += (pos['qty1'] * op1) + (pos['qty2'] * op2)
+
+        # Open new pair entries with conviction-weighted capital (100% if single pair, Z-weighted if two pairs)
+        for pair_name in new_entries:
+            s1, s2, p1, p2 = prices_log[pair_name]
+            z = z_scores_log[pair_name]
+            target_weight = abs(z) / total_z
+            allocation = current_equity * target_weight
+            
+            print(f"  -> ENTRY Triggered for {pair_name} (Allocation: {target_weight*100:.1f}% | ${allocation:,.2f})")
+            
+            if z > 0:
+                w1, w2 = -0.5, 0.5  # Short s1, Long s2
+            else:
+                w1, w2 = 0.5, -0.5  # Long s1, Short s2
                 
-                state['positions'][pair_name] = {
-                    'qty1': qty1,
-                    'qty2': qty2,
-                    'entry_price1': entry_p1,
-                    'entry_price2': entry_p2
-                }
-                portfolio_value += (qty1 * p1 + qty2 * p2)
-                log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
-    
+            alloc1, alloc2 = allocation * w1, allocation * w2
+            
+            entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
+            entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
+            
+            qty1 = alloc1 / entry_p1
+            qty2 = alloc2 / entry_p2
+            
+            cost = (qty1 * entry_p1) + (qty2 * entry_p2)
+            state['cash'] -= cost
+            
+            state['positions'][pair_name] = {
+                'qty1': qty1,
+                'qty2': qty2,
+                'entry_price1': entry_p1,
+                'entry_price2': entry_p2,
+                'weight': target_weight
+            }
+            log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
+
     print("==================================================\n")
+
+    # Calculate final end-of-day mark-to-market portfolio value
+    portfolio_value = state['cash']
+    for open_pair, pos in state['positions'].items():
+        if open_pair in prices_log:
+            _, _, p1, p2 = prices_log[open_pair]
+            portfolio_value += (pos['qty1'] * p1) + (pos['qty2'] * p2)
 
     save_state(state)
     
