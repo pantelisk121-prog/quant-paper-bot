@@ -8,6 +8,7 @@ from datetime import datetime
 
 # --- STRATEGY CONFIGURATION ---
 PAIRS = [('HD', 'LOW'), ('WMT', 'TGT')]
+PAIR_NAMES = [f"{s1}_{s2}" for s1, s2 in PAIRS]
 Z_ENTRY = 1.75
 Z_EXIT = 0.50
 Z_STOP = 4.0
@@ -31,7 +32,11 @@ def load_state():
                 return state
         except:
             pass
-    return {'cash': INITIAL_CAPITAL, 'positions': {}}
+    return {
+        'cash': INITIAL_CAPITAL,
+        'positions': {'HD': 0.0, 'LOW': 0.0, 'WMT': 0.0, 'TGT': 0.0, 'SPY': 0.0},
+        'last_run': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
 
 def save_state(state):
     with open(STATE_FILE, 'w') as f:
@@ -111,7 +116,7 @@ def main():
         
         print(f"  {s1} / {s2} Z-Score: {z:+.2f}  |  Target: ±{Z_ENTRY}  (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
         
-        if pair_name in state['positions']:
+        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
             pos = state['positions'][pair_name]
             val1 = pos['qty1'] * p1
             val2 = pos['qty2'] * p2
@@ -134,13 +139,19 @@ def main():
             if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
                 new_entries.append(pair_name)
 
+    # Helper list of currently open pair dictionaries
+    open_pair_names = [
+        p for p in PAIR_NAMES
+        if p in state['positions'] and isinstance(state['positions'][p], dict)
+    ]
+
     # --- PASS 2: PROCESS ENTRIES & DYNAMIC CONVICTION ALLOCATION ---
     if new_entries:
-        active_pairs = list(state['positions'].keys()) + new_entries
+        active_pairs = open_pair_names + new_entries
         total_z = sum(abs(z_scores_log[p]) for p in active_pairs)
         
         # If an existing pair is already open at 100%, trim it proportionally to free capital for the 2nd pair
-        for open_pair in list(state['positions'].keys()):
+        for open_pair in open_pair_names:
             pos = state['positions'][open_pair]
             s1, s2, p1, p2 = prices_log[open_pair]
             target_weight = abs(z_scores_log[open_pair]) / total_z
@@ -169,7 +180,8 @@ def main():
 
         # Calculate current total equity available to size new entries
         current_equity = state['cash']
-        for open_pair, pos in state['positions'].items():
+        for open_pair in open_pair_names:
+            pos = state['positions'][open_pair]
             _, _, op1, op2 = prices_log[open_pair]
             current_equity += (pos['qty1'] * op1) + (pos['qty2'] * op2)
 
@@ -209,21 +221,30 @@ def main():
 
     print("==================================================\n")
 
+    # Extract current share quantities for logging & syncing individual tickers
+    hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
+    low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
+    wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
+    tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
+    spy_shares = 0.0
+
+    # Keep individual ticker quantities and last_run updated in portfolio_state.json
+    state['positions']['HD'] = round(float(hd_shares), 4)
+    state['positions']['LOW'] = round(float(low_shares), 4)
+    state['positions']['WMT'] = round(float(wmt_shares), 4)
+    state['positions']['TGT'] = round(float(tgt_shares), 4)
+    state['positions']['SPY'] = round(float(spy_shares), 4)
+    state['last_run'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     # Calculate final end-of-day mark-to-market portfolio value
     portfolio_value = state['cash']
-    for open_pair, pos in state['positions'].items():
-        if open_pair in prices_log:
-            _, _, p1, p2 = prices_log[open_pair]
+    for pair_name in PAIR_NAMES:
+        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
+            pos = state['positions'][pair_name]
+            _, _, p1, p2 = prices_log[pair_name]
             portfolio_value += (pos['qty1'] * p1) + (pos['qty2'] * p2)
 
     save_state(state)
-    
-    # Extract current share quantities for logging (0.0 if not holding)
-    hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0)
-    low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0)
-    wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0)
-    tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0)
-    spy_shares = 0.0
 
     # --- LOG DAILY PERFORMANCE ---
     log_entry = {
