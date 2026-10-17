@@ -24,11 +24,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas statsmodels numpy
 
-      - name: Run Paper Bot Engine
-        run: python retail_paper_bot.py
+      - name: Run Paper Bot Engine (Weekdays Only)
+        run: |
+          if [ $(date +%u) -le 5 ]; then
+            python retail_paper_bot.py
+          else
+            echo "Weekend detected — skipping retail_paper_bot.py to keep daily_performance.csv strictly on trading days."
+          fi
 
-      - name: Evaluate Metrics
-        run: python evaluate_metrics.py
+      - name: Evaluate Metrics & Build Tables
+        run: |
+          python evaluate_metrics.py
+          if [ -f METRICS.md ]; then
+            cat METRICS.md >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Commit and Push Updated Logs
         run: |
