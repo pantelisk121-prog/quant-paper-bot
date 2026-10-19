@@ -10,7 +10,6 @@ INITIAL_CAPITAL = 10000.0
 
 
 def parse_date(date_str):
-    """Safely parse date or datetime strings from trade logs."""
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
         try:
             return datetime.strptime(str(date_str).strip(), fmt)
@@ -24,7 +23,6 @@ def calculate_metrics():
     print("      QUANT PORTFOLIO METRICS EVAL      ")
     print("========================================\n")
 
-    # --- 1. PROCESS INDIVIDUAL TRADES (ENTRY -> CLOSE MATCHING) ---
     closed_trades = []
     open_trades = {}
 
@@ -97,7 +95,6 @@ def calculate_metrics():
                         open_trades[pair]['qty1'] -= qty1
                         open_trades[pair]['qty2'] -= qty2
 
-    # Compute Trade-Level Summary Stats
     total_closed = len(closed_trades)
     if total_closed > 0:
         pnl_series = pd.Series([t['pnl'] for t in closed_trades])
@@ -120,7 +117,6 @@ def calculate_metrics():
         avg_pnl_str = "N/A"
         avg_hold_str = "N/A"
 
-    # --- 2. PROCESS DAILY EQUITY CURVE ---
     snapshots_count = 0
     current_equity_str = f"${INITIAL_CAPITAL:,.2f}"
     cum_return_str = "0.00%"
@@ -141,3 +137,98 @@ def calculate_metrics():
         if equity_col and snapshots_count >= 1:
             equity = perf_df[equity_col].astype(float)
             curr_eq = equity.iloc[-1]
+            current_equity_str = f"${curr_eq:,.2f}"
+            cum_ret = ((curr_eq - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100.0
+            cum_return_str = f"{cum_ret:+.2f}%"
+
+            if snapshots_count > 1:
+                daily_returns = equity.pct_change().dropna()
+                peak = equity.cummax()
+                drawdown = (equity - peak) / peak
+                max_dd = drawdown.min() * 100.0
+                max_dd_str = f"{max_dd:.2f}%"
+
+                daily_rf = (1 + 0.04) ** (1 / 252) - 1
+                excess_returns = daily_returns - daily_rf
+                sharpe = (excess_returns.mean() / excess_returns.std()) * np.sqrt(252) if excess_returns.std() > 0 else 0.0
+                sharpe_str = f"{sharpe:.2f}"
+
+        if not perf_df.empty:
+            if 'date' in perf_df.columns:
+                latest_date_str = str(perf_df['date'].iloc[-1])
+            if 'z_hd_low' in perf_df.columns:
+                latest_hd_low_str = f"{float(perf_df['z_hd_low'].iloc[-1]):+.4f}"
+            if 'z_wmt_tgt' in perf_df.columns:
+                latest_wmt_tgt_str = f"{float(perf_df['z_wmt_tgt'].iloc[-1]):+.4f}"
+            if 'vix' in perf_df.columns:
+                latest_vix_str = f"{float(perf_df['vix'].iloc[-1]):.2f}"
+
+    md_lines = [
+        "# Quantitative Portfolio Performance & Trade Log",
+        f"*Last Updated: `{latest_date_str}`*\n",
+        "## 1. Overall Portfolio & Strategy Statistics",
+        "| Metric | Value | Notes |",
+        "| :--- | :--- | :--- |",
+        f"| **Starting Capital** | `${INITIAL_CAPITAL:,.2f}` | Baseline paper-trading allocation |",
+        f"| **Current Total Equity** | `{current_equity_str}` | Mark-to-market portfolio value |",
+        f"| **Cumulative Return** | `{cum_return_str}` | Net return including open positions & slippage |",
+        f"| **Max Drawdown** | `{max_dd_str}` | Largest peak-to-trough equity decline |",
+        f"| **Annualized Sharpe Ratio** | `{sharpe_str}` | Risk-adjusted return (4.0% risk-free benchmark) |",
+        f"| **Daily Snapshots Logged** | `{snapshots_count}` | Trading days tracked in `daily_performance.csv` |",
+        f"| **Total Closed Trades** | `{total_closed}` | Completed round-trip pair trades |",
+        f"| **Win Rate** | `{win_rate_str}` | Percentage of closed trades with net profit > $0 |",
+        f"| **Profit Factor** | `{pf_str}` | Gross realized profits divided by gross losses |",
+        f"| **Total Realized PnL** | `{total_realized_pnl_str}` | Cumulative profit/loss from closed trades |",
+        f"| **Average PnL per Trade** | `{avg_pnl_str}` | Mean realized profit/loss per closed trade |",
+        f"| **Average Hold Duration** | `{avg_hold_str}` | Mean calendar days from entry to exit |",
+        f"| **Latest Z-Scores (HD/LOW \\| WMT/TGT)** | `{latest_hd_low_str}` \\| `{latest_wmt_tgt_str}` | Entry: `±1.75` \\| Exit: `±0.50` \\| Stop: `±4.00` |",
+        f"| **Latest VIX (Regime Filter)** | `{latest_vix_str}` | Circuit breaker halts trading above `30.00` |",
+        "\n---\n",
+        "## 2. Individual Closed Trades Log (By Close Date)",
+        "| Trade # | Pair | Direction | Entry Date | Closed Date | Days Held | Exit Signal | Entry Prices (S1 / S2) | Exit Prices (S1 / S2) | Realized PnL ($) | Return (%) | Outcome |",
+        "| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+    ]
+
+    if closed_trades:
+        for t in closed_trades:
+            md_lines.append(
+                f"| {t['trade_num']} | **{t['pair']}** | {t['direction']} | `{t['entry_date']}` | "
+                f"`{t['close_date']}` | {t['days_held']} | {t['exit_type']} | {t['entry_prices']} | "
+                f"{t['exit_prices']} | **${t['pnl']:+,.2f}** | `{t['ret_pct']:+.2f}%` | **{t['outcome']}** |"
+            )
+    else:
+        md_lines.append(
+            "| — | *No closed trades yet* | — | — | — | — | *Waiting for active trade to hit ±0.50 Z-exit* | — | — | `$0.00` | `0.00%` | `PENDING` |"
+        )
+
+    md_lines.extend([
+        "\n---\n",
+        "## 3. Currently Open Positions",
+        "| Pair | Direction | Entry Date | Shares (S1 / S2) | Entry Prices (S1 / S2) | Current Status |",
+        "| :---: | :--- | :---: | :---: | :---: | :---: |"
+    ])
+
+    if open_trades:
+        for pair, info in open_trades.items():
+            s1, s2 = info['stock1'], info['stock2']
+            q1, q2 = info['qty1'], info['qty2']
+            ep1, ep2 = info['entry_p1'], info['entry_p2']
+            entry_dt = parse_date(info['entry_date'])
+            e_date = entry_dt.strftime('%Y-%m-%d') if entry_dt else info['entry_date']
+            direction = f"Short {s1} / Long {s2}" if q1 < 0 else f"Long {s1} / Short {s2}"
+            md_lines.append(
+                f"| **{pair.replace('_', ' / ')}** | {direction} | `{e_date}` | `{q1:.4f}` / `{q2:.4f}` | "
+                f"${ep1:.2f} /${ep2:.2f} | **OPEN (Active)** |"
+            )
+    else:
+        md_lines.append("| — | *No open positions* | — | — | — | `FLAT (100% Cash)` |")
+
+    with open(METRICS_MD_FILE, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(md_lines) + '\n')
+
+    print('\n'.join(md_lines))
+    print(f"\n[SUCCESS] Markdown tables written to {METRICS_MD_FILE}")
+
+
+if __name__ == "__main__":
+    calculate_metrics()
