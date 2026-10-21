@@ -6,7 +6,7 @@ This repository houses a mean-reversion statistical arbitrage trading framework 
 
 Linked here is the code to my initial 5-yr back-test on Google Colab: https://colab.research.google.com/drive/1sYzJFaVPMUsmY8VQJ2mDjHrf0jYR2Kq1?usp=sharing 
 
-Linked here is my Whitepaper, providing a more in-depth description to the process and evolution of my project: https://docs.google.com/document/d/1-H1jHi9Co_-EpBGxrbBVoGRzHcz0qr1WNsdtOnAL-Hc/edit?usp=sharing 
+Linked here is my working paper, providing a more in-depth description to the process and evolution of my project: https://docs.google.com/document/d/1-H1jHi9Co_-EpBGxrbBVoGRzHcz0qr1WNsdtOnAL-Hc/edit?usp=sharing 
 
 ## Google Colab Backtest Evolution & Diagnostic Journey
 The underlying strategy was developed across seven distinct iterative stages, transitioning from a basic linear model to a dynamically sized, macro-aware framework. I intentionally documented the failures and structural breaks encountered during testing to engineer robust, programmatic solutions.
