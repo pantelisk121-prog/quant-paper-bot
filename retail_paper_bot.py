@@ -17,6 +17,7 @@ SLIPPAGE = 0.0005  # 0.05% friction
 LOOKBACK = 60
 INITIAL_CAPITAL = 10000.0  # Matches $10,000 baseline
 MAX_PROFIT_HOLD_DAYS = 15  # Require pnl > 0 at Z_EXIT for first 15 calendar days
+REBALANCE_MIN_Z = 2.25     # Minimum Z-score required to trim an underwater open position
 
 # --- FILE PATHS ---
 STATE_FILE = 'portfolio_state.json'
@@ -137,18 +138,15 @@ def main():
             val1 = pos['qty1'] * p1
             val2 = pos['qty2'] * p2
             
-            # Pre-calculate net exit value and PnL (including exit slippage)
             exit_val1 = val1 * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
             exit_val2 = val2 * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
             total_exit_val = exit_val1 + exit_val2
             entry_val = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
             pnl = total_exit_val - entry_val
             
-            # Calculate days held (defaults to 2026-10-14 if not set in state)
             entry_dt = parse_date(pos.get('entry_date', '2026-10-14'))
             days_held = (today_dt.date() - entry_dt.date()).days if entry_dt else 0
 
-            # 15-Day Time-Capped Profit Filter & Unconditional Stop-Loss
             should_exit = False
             action = None
 
@@ -177,7 +175,6 @@ def main():
             if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
                 new_entries.append(pair_name)
 
-    # Helper list of currently open pair dictionaries
     open_pair_names = [
         p for p in PAIR_NAMES
         if p in state['positions'] and isinstance(state['positions'][p], dict)
@@ -198,14 +195,19 @@ def main():
         approved_entries = []
         for cand_pair in new_entries:
             cand_z = abs(z_scores_log[cand_pair])
-            if unrealized_pnl > 0 or cand_z > open_z:
-                reason = f"Open trade profitable (${unrealized_pnl:+.2f})" if unrealized_pnl > 0 else f"New |Z| ({cand_z:.2f}) > Open |Z| ({open_z:.2f})"
+            if unrealized_pnl > 0 or (cand_z >= REBALANCE_MIN_Z and cand_z > open_z):
+                reason = (
+                    f"Open trade profitable (${unrealized_pnl:+.2f})"
+                    if unrealized_pnl > 0
+                    else f"New |Z| ({cand_z:.2f}) >= {REBALANCE_MIN_Z} and > Open |Z| ({open_z:.2f})"
+                )
                 print(f"  -> REBALANCE APPROVED for {cand_pair}: {reason}")
                 approved_entries.append(cand_pair)
             else:
                 print(
                     f"  -> REBALANCE BLOCKED for {cand_pair}: {open_pair} is in drawdown (${unrealized_pnl:+.2f}) "
-                    f"and has a stronger |Z| ({open_z:.2f} >= {cand_z:.2f}). Holding 100% in {open_pair} to avoid locking in loss."
+                    f"and {cand_pair} |Z| ({cand_z:.2f}) fails override (requires |Z| >= {REBALANCE_MIN_Z} and > {open_z:.2f}). "
+                    f"Holding 100% in {open_pair} to avoid locking in loss."
                 )
         new_entries = approved_entries
 
@@ -282,14 +284,12 @@ def main():
 
     print("==================================================\n")
 
-    # Extract current share quantities for logging & syncing individual tickers
     hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
     low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
     wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
     tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
     spy_shares = 0.0
 
-    # Keep individual ticker quantities and last_run updated in portfolio_state.json
     state['positions']['HD'] = round(float(hd_shares), 4)
     state['positions']['LOW'] = round(float(low_shares), 4)
     state['positions']['WMT'] = round(float(wmt_shares), 4)
@@ -297,13 +297,11 @@ def main():
     state['positions']['SPY'] = round(float(spy_shares), 4)
     state['last_run'] = today_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # Backfill entry_date on existing open positions if not already saved
     for pair_name in PAIR_NAMES:
         if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
             if 'entry_date' not in state['positions'][pair_name]:
                 state['positions'][pair_name]['entry_date'] = '2026-10-14'
 
-    # Calculate final end-of-day mark-to-market portfolio value
     portfolio_value = state['cash']
     for pair_name in PAIR_NAMES:
         if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
@@ -313,7 +311,6 @@ def main():
 
     save_state(state)
 
-    # --- LOG DAILY PERFORMANCE ---
     log_entry = {
         'date': today_dt.strftime('%Y-%m-%d'),
         'total_equity': round(float(portfolio_value), 2),
