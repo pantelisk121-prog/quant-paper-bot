@@ -2,8 +2,11 @@ name: Run Retail Paper Bot Daily
 
 on:
   schedule:
-    - cron: '08 21 * * 1-5'
+    - cron: '35 20 * * 1-5'  # 4:35 PM EDT (avoids top-of-hour GitHub queue delays)
   workflow_dispatch:
+
+env:
+  TZ: America/New_York  # Forces all Linux & Python timestamps to US Eastern Market Time
 
 jobs:
   run-bot:
@@ -24,12 +27,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install yfinance pandas statsmodels numpy
 
-      - name: Run Paper Bot Engine (Weekdays Only)
+      - name: Run Paper Bot Engine (Weekdays Only in US Market Time)
         run: |
           if [ $(date +%u) -le 5 ]; then
             python retail_paper_bot.py
           else
-            echo "Weekend detected — skipping retail_paper_bot.py to keep daily_performance.csv strictly on trading days."
+            echo "Weekend in New York detected — skipping retail_paper_bot.py."
           fi
 
       - name: Evaluate Metrics & Build Tables
