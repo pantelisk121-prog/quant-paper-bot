@@ -5,6 +5,7 @@ import numpy as np
 import json
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # --- STRATEGY CONFIGURATION ---
 PAIRS = [('HD', 'LOW'), ('WMT', 'TGT')]
@@ -18,11 +19,17 @@ LOOKBACK = 60
 INITIAL_CAPITAL = 10000.0  # Matches $10,000 baseline
 MAX_PROFIT_HOLD_DAYS = 15  # Require pnl > 0 at Z_EXIT for first 15 calendar days
 REBALANCE_MIN_Z = 2.25     # Minimum Z-score required to trim an underwater open position
+MARKET_TZ = ZoneInfo("America/New_York")
 
 # --- FILE PATHS ---
 STATE_FILE = 'portfolio_state.json'
 TRADES_FILE = 'paper_trades.csv'
 PERF_FILE = 'daily_performance.csv'
+
+
+def ny_now():
+    """Always return current datetime in US Eastern Market Time (EDT/EST)."""
+    return datetime.now(MARKET_TZ).replace(tzinfo=None)
 
 
 def parse_date(date_str):
@@ -47,7 +54,7 @@ def load_state():
     return {
         'cash': INITIAL_CAPITAL,
         'positions': {'HD': 0.0, 'LOW': 0.0, 'WMT': 0.0, 'TGT': 0.0, 'SPY': 0.0},
-        'last_run': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'last_run': ny_now().strftime('%Y-%m-%d %H:%M:%S')
     }
 
 
@@ -58,7 +65,7 @@ def save_state(state):
 
 def log_trade(pair_name, action, stock1, stock2, qty1, qty2, price1, price2, pnl=0.0):
     trade_data = {
-        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'date': ny_now().strftime('%Y-%m-%d %H:%M:%S'),
         'pair': pair_name,
         'action': action,
         'stock1': stock1,
@@ -114,7 +121,7 @@ def main():
     z_scores_log = {}
     prices_log = {}
     new_entries = []
-    today_dt = datetime.now()
+    today_dt = ny_now()
     
     print("\n==================================================")
     print("             DAILY PAIR Z-SCORE MONITOR           ")
