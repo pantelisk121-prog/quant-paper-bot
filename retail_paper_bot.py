@@ -83,34 +83,56 @@ def log_trade(pair_name, action, stock1, stock2, qty1, qty2, price1, price2, pnl
         df.to_csv(TRADES_FILE, index=False)
 
 
+def fetch_single_close(ticker_symbol):
+    """Fetch clean daily close series for a single ticker without multi-ticker NaN drops."""
+    hist = yf.Ticker(ticker_symbol).history(period="90d", interval="1d", auto_adjust=False)
+    if hist.empty or 'Close' not in hist.columns:
+        raw = yf.download(ticker_symbol, period="90d", interval="1d", progress=False, auto_adjust=False)['Close']
+        s = raw.squeeze().dropna()
+    else:
+        s = hist['Close'].dropna()
+
+    # Normalize index to pure YYYY-MM-DD market dates so timestamps never mismatch
+    s.index = pd.to_datetime(s.index).strftime('%Y-%m-%d')
+    s = s[~s.index.duplicated(keep='last')]
+    return s
+
+
 def calculate_z_score(stock1, stock2):
-    data = yf.download([stock1, stock2], period="90d", progress=False)['Close']
-    data = data.dropna()
+    s1_series = fetch_single_close(stock1)
+    s2_series = fetch_single_close(stock2)
+
+    data = pd.DataFrame({stock1: s1_series, stock2: s2_series}).dropna()
     if len(data) < LOOKBACK:
         return None, None
-    
+
     data = data.tail(LOOKBACK)
+    latest_bar_date = data.index[-1]
+    p1_val = float(data[stock1].iloc[-1])
+    p2_val = float(data[stock2].iloc[-1])
+    print(f"  [DATA CHECK] {stock1}: ${p1_val:.2f} | {stock2}: ${p2_val:.2f} (Bar Date: {latest_bar_date})")
+
     y = data[stock1]
     X = sm.add_constant(data[stock2])
-    
+
     model = sm.OLS(y, X).fit()
     spread = y - model.predict(X)
-    
+
     raw_z = (spread.iloc[-1] - spread.mean()) / spread.std()
     z_score = float(np.ravel(raw_z)[0])
-    
+
     latest_prices = {
-        stock1: float(np.ravel(data[stock1].iloc[-1])[0]),
-        stock2: float(np.ravel(data[stock2].iloc[-1])[0])
+        stock1: p1_val,
+        stock2: p2_val
     }
-    
+
     return z_score, latest_prices
 
 
 def main():
     print("Fetching VIX data...")
-    vix_data = yf.download('^VIX', period="5d", progress=False)['Close']
-    vix = float(np.ravel(vix_data.dropna())[-1])
+    vix_series = fetch_single_close('^VIX')
+    vix = float(vix_series.iloc[-1])
     
     print(f"Current VIX (Fear Factor): {vix:.2f}")
     if vix > VIX_MAX:
