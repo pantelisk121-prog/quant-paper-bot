@@ -84,18 +84,70 @@ def log_trade(pair_name, action, stock1, stock2, qty1, qty2, price1, price2, pnl
 
 
 def fetch_single_close(ticker_symbol):
-    """Fetch clean daily close series for a single ticker without multi-ticker NaN drops."""
-    hist = yf.Ticker(ticker_symbol).history(period="90d", interval="1d", auto_adjust=False)
+    """
+    Fetch daily closes AND force-inject today's live/intraday close if Yahoo's
+    daily ('1d') CDN cache is lagging behind on GitHub Actions servers.
+    """
+    t = yf.Ticker(ticker_symbol)
+    hist = t.history(period="90d", interval="1d", auto_adjust=False)
     if hist.empty or 'Close' not in hist.columns:
         raw = yf.download(ticker_symbol, period="90d", interval="1d", progress=False, auto_adjust=False)['Close']
         s = raw.squeeze().dropna()
     else:
         s = hist['Close'].dropna()
 
-    # Normalize index to pure YYYY-MM-DD market dates so timestamps never mismatch
-    s.index = pd.to_datetime(s.index).strftime('%Y-%m-%d')
+    # Convert index to US Eastern date strings (YYYY-MM-DD)
+    idx_dt = pd.to_datetime(s.index)
+    if idx_dt.tz is not None:
+        idx_dt = idx_dt.tz_convert(MARKET_TZ)
+    s.index = idx_dt.strftime('%Y-%m-%d')
     s = s[~s.index.duplicated(keep='last')]
-    return s
+
+    today_dt = ny_now()
+    today_str = today_dt.strftime('%Y-%m-%d')
+
+    # Check if today's bar is missing OR if Yahoo duplicated yesterday's exact price
+    needs_intraday = False
+    if today_dt.weekday() < 5:  # Monday-Friday
+        if today_str not in s.index:
+            needs_intraday = True
+        elif len(s) >= 2 and abs(float(s.iloc[-1]) - float(s.iloc[-2])) < 1e-6:
+            needs_intraday = True
+
+    if needs_intraday:
+        try:
+            # Pull un-cached 5-minute intraday bars to get today's true 4:00 PM market close
+            intraday = t.history(period="5d", interval="5m", prepost=False, auto_adjust=False)
+            if not intraday.empty and 'Close' in intraday.columns:
+                intra_close = intraday['Close'].dropna()
+                intra_idx = pd.to_datetime(intra_close.index)
+                if intra_idx.tz is not None:
+                    intra_idx = intra_idx.tz_convert(MARKET_TZ)
+                intra_dates = intra_idx.strftime('%Y-%m-%d')
+                today_bars = intra_close[intra_dates == today_str]
+                if not today_bars.empty:
+                    live_px = float(today_bars.iloc[-1])
+                    s.loc[today_str] = live_px
+                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {today_str} close = ${live_px:.2f} (from 5m feed)")
+                else:
+                    last_bar_date = intra_dates[-1]
+                    live_px = float(intra_close.iloc[-1])
+                    s.loc[last_bar_date] = live_px
+                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {last_bar_date} close = ${live_px:.2f}")
+        except Exception as e:
+            print(f"  [WARN] Intraday fallback failed for {ticker_symbol}: {e}")
+
+        # Secondary fallback using fast_info.last_price
+        if today_str not in s.index:
+            try:
+                fast_px = float(t.fast_info['last_price'])
+                if fast_px > 0:
+                    s.loc[today_str] = fast_px
+                    print(f"  [FAST_INFO FIX] {ticker_symbol}: Injected {today_str} close = ${fast_px:.2f}")
+            except Exception:
+                pass
+
+    return s.sort_index()
 
 
 def calculate_z_score(stock1, stock2):
@@ -110,7 +162,7 @@ def calculate_z_score(stock1, stock2):
     latest_bar_date = data.index[-1]
     p1_val = float(data[stock1].iloc[-1])
     p2_val = float(data[stock2].iloc[-1])
-    print(f"  [DATA CHECK] {stock1}: ${p1_val:.2f} | {stock2}: ${p2_val:.2f} (Bar Date: {latest_bar_date})")
+    print(f"  [DATA CHECK] {stock1}: ${p1_val:.2f} \vert{} {stock2}:${p2_val:.2f} (Bar Date: {latest_bar_date})")
 
     y = data[stock1]
     X = sm.add_constant(data[stock2])
@@ -264,107 +316,3 @@ def main():
                 
                 entry_val = (closed_qty1 * pos['entry_price1']) + (closed_qty2 * pos['entry_price2'])
                 pnl = total_exit_val - entry_val
-                
-                state['cash'] += total_exit_val
-                pos['qty1'] *= keep_ratio
-                pos['qty2'] *= keep_ratio
-                pos['weight'] = target_weight
-                log_trade(open_pair, 'REBALANCE (Trim)', s1, s2, closed_qty1, closed_qty2, p1, p2, pnl)
-
-        current_equity = state['cash']
-        for open_pair in open_pair_names:
-            pos = state['positions'][open_pair]
-            _, _, op1, op2 = prices_log[open_pair]
-            current_equity += (pos['qty1'] * op1) + (pos['qty2'] * op2)
-
-        for pair_name in new_entries:
-            s1, s2, p1, p2 = prices_log[pair_name]
-            z = z_scores_log[pair_name]
-            target_weight = abs(z) / total_z
-            allocation = current_equity * target_weight
-            
-            print(f"  -> ENTRY Triggered for {pair_name} (Allocation: {target_weight*100:.1f}% | ${allocation:,.2f})")
-            
-            if z > 0:
-                w1, w2 = -0.5, 0.5  # Short s1, Long s2
-            else:
-                w1, w2 = 0.5, -0.5  # Long s1, Short s2
-                
-            alloc1, alloc2 = allocation * w1, allocation * w2
-            
-            entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
-            entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
-            
-            qty1 = alloc1 / entry_p1
-            qty2 = alloc2 / entry_p2
-            
-            cost = (qty1 * entry_p1) + (qty2 * entry_p2)
-            state['cash'] -= cost
-            
-            state['positions'][pair_name] = {
-                'qty1': qty1,
-                'qty2': qty2,
-                'entry_price1': entry_p1,
-                'entry_price2': entry_p2,
-                'weight': target_weight,
-                'entry_date': today_dt.strftime('%Y-%m-%d')
-            }
-            log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
-
-    print("==================================================\n")
-
-    hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
-    low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
-    wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
-    tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
-    spy_shares = 0.0
-
-    state['positions']['HD'] = round(float(hd_shares), 4)
-    state['positions']['LOW'] = round(float(low_shares), 4)
-    state['positions']['WMT'] = round(float(wmt_shares), 4)
-    state['positions']['TGT'] = round(float(tgt_shares), 4)
-    state['positions']['SPY'] = round(float(spy_shares), 4)
-    state['last_run'] = today_dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    for pair_name in PAIR_NAMES:
-        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
-            if 'entry_date' not in state['positions'][pair_name]:
-                state['positions'][pair_name]['entry_date'] = '2026-10-14'
-
-    portfolio_value = state['cash']
-    for pair_name in PAIR_NAMES:
-        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
-            pos = state['positions'][pair_name]
-            _, _, p1, p2 = prices_log[pair_name]
-            portfolio_value += (pos['qty1'] * p1) + (pos['qty2'] * p2)
-
-    save_state(state)
-
-    log_entry = {
-        'date': today_dt.strftime('%Y-%m-%d'),
-        'total_equity': round(float(portfolio_value), 2),
-        'cash': round(float(state['cash']), 2),
-        'HD_Shares': round(float(hd_shares), 4),
-        'LOW_Shares': round(float(low_shares), 4),
-        'WMT_Shares': round(float(wmt_shares), 4),
-        'TGT_Shares': round(float(tgt_shares), 4),
-        'SPY_Shares': round(float(spy_shares), 4),
-        'z_hd_low': round(float(z_scores_log.get('HD_LOW', 0.0)), 4),
-        'z_wmt_tgt': round(float(z_scores_log.get('WMT_TGT', 0.0)), 4),
-        'vix': round(float(vix), 2)
-    }
-    
-    if os.path.exists(PERF_FILE):
-        perf_df = pd.read_csv(PERF_FILE)
-        perf_df = pd.concat([perf_df, pd.DataFrame([log_entry])], ignore_index=True)
-    else:
-        perf_df = pd.DataFrame([log_entry])
-        
-    perf_df.drop_duplicates(subset=['date'], keep='last', inplace=True)
-    perf_df.to_csv(PERF_FILE, index=False)
-    
-    print(f"Daily execution complete. Total Portfolio Value: ${portfolio_value:,.2f}")
-
-
-if __name__ == "__main__":
-    main()
