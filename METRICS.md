@@ -16,7 +16,7 @@
 | **Total Realized PnL** | `$0.00` | Cumulative profit/loss from closed trades |
 | **Average PnL per Trade** | `N/A` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `N/A` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `+1.6878` \| `+1.0581` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `+1.8736` \| `+0.9592` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
 | **Latest VIX (Regime Filter)** | `16.91` | Circuit breaker halts trading above `30.00` |
 
 ---
