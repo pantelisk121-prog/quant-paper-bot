@@ -16,7 +16,7 @@ Z_STOP = 4.0
 VIX_MAX = 30.0
 SLIPPAGE = 0.0005  # 0.05% friction
 LOOKBACK = 60
-INITIAL_CAPITAL = 10000.0  # Matches $10,000 baseline
+INITIAL_CAPITAL = 10000.0  # Matches 10,000 USD baseline
 MAX_PROFIT_HOLD_DAYS = 15  # Require pnl > 0 at Z_EXIT for first 15 calendar days
 REBALANCE_MIN_Z = 2.25     # Minimum Z-score required to trim an underwater open position
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -46,10 +46,12 @@ def load_state():
         try:
             with open(STATE_FILE, 'r') as f:
                 state = json.load(f)
-                if 'cash' not in state: state['cash'] = INITIAL_CAPITAL
-                if 'positions' not in state: state['positions'] = {}
+                if 'cash' not in state:
+                    state['cash'] = INITIAL_CAPITAL
+                if 'positions' not in state:
+                    state['positions'] = {}
                 return state
-        except:
+        except Exception:
             pass
     return {
         'cash': INITIAL_CAPITAL,
@@ -128,12 +130,12 @@ def fetch_single_close(ticker_symbol):
                 if not today_bars.empty:
                     live_px = float(today_bars.iloc[-1])
                     s.loc[today_str] = live_px
-                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {today_str} close = ${live_px:.2f} (from 5m feed)")
+                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {today_str} close = {live_px:.2f} (from 5m feed)")
                 else:
                     last_bar_date = intra_dates[-1]
                     live_px = float(intra_close.iloc[-1])
                     s.loc[last_bar_date] = live_px
-                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {last_bar_date} close = ${live_px:.2f}")
+                    print(f"  [LIVE INTRADAY FIX] {ticker_symbol}: Injected {last_bar_date} close = {live_px:.2f}")
         except Exception as e:
             print(f"  [WARN] Intraday fallback failed for {ticker_symbol}: {e}")
 
@@ -143,7 +145,7 @@ def fetch_single_close(ticker_symbol):
                 fast_px = float(t.fast_info['last_price'])
                 if fast_px > 0:
                     s.loc[today_str] = fast_px
-                    print(f"  [FAST_INFO FIX] {ticker_symbol}: Injected {today_str} close = ${fast_px:.2f}")
+                    print(f"  [FAST_INFO FIX] {ticker_symbol}: Injected {today_str} close = {fast_px:.2f}")
             except Exception:
                 pass
 
@@ -162,7 +164,7 @@ def calculate_z_score(stock1, stock2):
     latest_bar_date = data.index[-1]
     p1_val = float(data[stock1].iloc[-1])
     p2_val = float(data[stock2].iloc[-1])
-    print(f"  [DATA CHECK] {stock1}: ${p1_val:.2f} \vert{} {stock2}:${p2_val:.2f} (Bar Date: {latest_bar_date})")
+    print(f"  [DATA CHECK] {stock1}: {p1_val:.2f} USD -- {stock2}: {p2_val:.2f} USD (Bar Date: {latest_bar_date})")
 
     y = data[stock1]
     X = sm.add_constant(data[stock2])
@@ -212,7 +214,7 @@ def main():
         prices_log[pair_name] = (s1, s2, latest_prices[s1], latest_prices[s2])
         p1, p2 = latest_prices[s1], latest_prices[s2]
         
-        print(f"  {s1} / {s2} Z-Score: {z:+.2f}  |  Target: ±{Z_ENTRY}  (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
+        print(f"  {s1} / {s2} Z-Score: {z:+.2f} -- Target: +/-{Z_ENTRY} (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
         
         if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
             pos = state['positions'][pair_name]
@@ -243,12 +245,12 @@ def main():
                     action = f'EXIT (Time-Capped {days_held}d)'
                 else:
                     print(
-                        f"  -> HOLD {pair_name}: Z-Score ({z:+.2f}) <= ±{Z_EXIT}, but Net PnL (${pnl:+.2f}) <= $0 "
+                        f"  -> HOLD {pair_name}: Z-Score ({z:+.2f}) <= +/-{Z_EXIT}, but Net PnL ({pnl:+.2f} USD) <= 0 "
                         f"on Day {days_held}/{MAX_PROFIT_HOLD_DAYS}. Waiting for price convergence."
                     )
 
             if should_exit:
-                print(f"  -> {action} Triggered for {pair_name} (Day {days_held} | Net PnL: ${pnl:+.2f})")
+                print(f"  -> {action} Triggered for {pair_name} (Day {days_held} -- Net PnL: {pnl:+.2f} USD)")
                 state['cash'] += total_exit_val
                 log_trade(pair_name, action, s1, s2, pos['qty1'], pos['qty2'], p1, p2, pnl)
                 del state['positions'][pair_name]
@@ -278,16 +280,16 @@ def main():
             cand_z = abs(z_scores_log[cand_pair])
             if unrealized_pnl > 0 or (cand_z >= REBALANCE_MIN_Z and cand_z > open_z):
                 reason = (
-                    f"Open trade profitable (${unrealized_pnl:+.2f})"
+                    f"Open trade profitable ({unrealized_pnl:+.2f} USD)"
                     if unrealized_pnl > 0
-                    else f"New |Z| ({cand_z:.2f}) >= {REBALANCE_MIN_Z} and > Open |Z| ({open_z:.2f})"
+                    else f"New abs(Z) ({cand_z:.2f}) >= {REBALANCE_MIN_Z} and > Open abs(Z) ({open_z:.2f})"
                 )
-                print(f"  -> REBALANCE APPROVED for {cand_pair}: {reason}")
+                print(f"  -> REBALANCING APPROVED for {cand_pair}: {reason}")
                 approved_entries.append(cand_pair)
             else:
                 print(
-                    f"  -> REBALANCE BLOCKED for {cand_pair}: {open_pair} is in drawdown (${unrealized_pnl:+.2f}) "
-                    f"and {cand_pair} |Z| ({cand_z:.2f}) fails override (requires |Z| >= {REBALANCE_MIN_Z} and > {open_z:.2f}). "
+                    f"  -> REBALANCING BLOCKED for {cand_pair}: {open_pair} is in drawdown ({unrealized_pnl:+.2f} USD) "
+                    f"and {cand_pair} abs(Z) ({cand_z:.2f}) fails override (requires >= {REBALANCE_MIN_Z} and > {open_z:.2f}). "
                     f"Holding 100% in {open_pair} to avoid locking in loss."
                 )
         new_entries = approved_entries
@@ -316,3 +318,107 @@ def main():
                 
                 entry_val = (closed_qty1 * pos['entry_price1']) + (closed_qty2 * pos['entry_price2'])
                 pnl = total_exit_val - entry_val
+                
+                state['cash'] += total_exit_val
+                pos['qty1'] *= keep_ratio
+                pos['qty2'] *= keep_ratio
+                pos['weight'] = target_weight
+                log_trade(open_pair, 'REBALANCE (Trim)', s1, s2, closed_qty1, closed_qty2, p1, p2, pnl)
+
+        current_equity = state['cash']
+        for open_pair in open_pair_names:
+            pos = state['positions'][open_pair]
+            _, _, op1, op2 = prices_log[open_pair]
+            current_equity += (pos['qty1'] * op1) + (pos['qty2'] * op2)
+
+        for pair_name in new_entries:
+            s1, s2, p1, p2 = prices_log[pair_name]
+            z = z_scores_log[pair_name]
+            target_weight = abs(z) / total_z
+            allocation = current_equity * target_weight
+            
+            print(f"  -> ENTRY Triggered for {pair_name} (Allocation: {target_weight*100:.1f}% -- {allocation:,.2f} USD)")
+            
+            if z > 0:
+                w1, w2 = -0.5, 0.5  # Short s1, Long s2
+            else:
+                w1, w2 = 0.5, -0.5  # Long s1, Short s2
+                
+            alloc1, alloc2 = allocation * w1, allocation * w2
+            
+            entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
+            entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
+            
+            qty1 = alloc1 / entry_p1
+            qty2 = alloc2 / entry_p2
+            
+            cost = (qty1 * entry_p1) + (qty2 * entry_p2)
+            state['cash'] -= cost
+            
+            state['positions'][pair_name] = {
+                'qty1': qty1,
+                'qty2': qty2,
+                'entry_price1': entry_p1,
+                'entry_price2': entry_p2,
+                'weight': target_weight,
+                'entry_date': today_dt.strftime('%Y-%m-%d')
+            }
+            log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
+
+    print("==================================================\n")
+
+    hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
+    low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
+    wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
+    tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
+    spy_shares = 0.0
+
+    state['positions']['HD'] = round(float(hd_shares), 4)
+    state['positions']['LOW'] = round(float(low_shares), 4)
+    state['positions']['WMT'] = round(float(wmt_shares), 4)
+    state['positions']['TGT'] = round(float(tgt_shares), 4)
+    state['positions']['SPY'] = round(float(spy_shares), 4)
+    state['last_run'] = today_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    for pair_name in PAIR_NAMES:
+        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
+            if 'entry_date' not in state['positions'][pair_name]:
+                state['positions'][pair_name]['entry_date'] = '2026-10-14'
+
+    portfolio_value = state['cash']
+    for pair_name in PAIR_NAMES:
+        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
+            pos = state['positions'][pair_name]
+            _, _, p1, p2 = prices_log[pair_name]
+            portfolio_value += (pos['qty1'] * p1) + (pos['qty2'] * p2)
+
+    save_state(state)
+
+    log_entry = {
+        'date': today_dt.strftime('%Y-%m-%d'),
+        'total_equity': round(float(portfolio_value), 2),
+        'cash': round(float(state['cash']), 2),
+        'HD_Shares': round(float(hd_shares), 4),
+        'LOW_Shares': round(float(low_shares), 4),
+        'WMT_Shares': round(float(wmt_shares), 4),
+        'TGT_Shares': round(float(tgt_shares), 4),
+        'SPY_Shares': round(float(spy_shares), 4),
+        'z_hd_low': round(float(z_scores_log.get('HD_LOW', 0.0)), 4),
+        'z_wmt_tgt': round(float(z_scores_log.get('WMT_TGT', 0.0)), 4),
+        'vix': round(float(vix), 2)
+    }
+    
+    if os.path.exists(PERF_FILE):
+        perf_df = pd.read_csv(PERF_FILE)
+        perf_df = pd.concat([perf_df, pd.DataFrame([log_entry])], ignore_index=True)
+    else:
+        perf_df = pd.DataFrame([log_entry])
+        
+    perf_df.drop_duplicates(subset=['date'], keep='last', inplace=True)
+    perf_df.to_csv(PERF_FILE, index=False)
+    
+    print(f"Daily execution complete. Total Portfolio Value: {portfolio_value:,.2f} USD")
+
+
+if __name__ == "__main__":
+    main()
