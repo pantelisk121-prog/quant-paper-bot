@@ -1,23 +1,23 @@
 # Quantitative Portfolio Performance & Trade Log
-*Last Updated: `2026-11-02`*
+*Last Updated: `2026-11-03`*
 
 ## 1. Overall Portfolio & Strategy Statistics
 | Metric | Value | Notes |
 | :--- | :--- | :--- |
 | **Starting Capital** | `$10,000.00` | Baseline paper-trading allocation |
-| **Current Total Equity** | `$9,597.24` | Mark-to-market portfolio value |
-| **Cumulative Return** | `-4.03%` | Net return including open positions & slippage |
-| **Max Drawdown** | `-4.03%` | Largest peak-to-trough equity decline |
-| **Annualized Sharpe Ratio** | `-4.30` | Risk-adjusted return (4.0% risk-free benchmark) |
-| **Daily Snapshots Logged** | `48` | Trading days tracked in `daily_performance.csv` |
+| **Current Total Equity** | `$9,591.05` | Mark-to-market portfolio value |
+| **Cumulative Return** | `-4.09%` | Net return including open positions & slippage |
+| **Max Drawdown** | `-4.09%` | Largest peak-to-trough equity decline |
+| **Annualized Sharpe Ratio** | `-4.33` | Risk-adjusted return (4.0% risk-free benchmark) |
+| **Daily Snapshots Logged** | `49` | Trading days tracked in `daily_performance.csv` |
 | **Total Closed Trades** | `0` | Completed round-trip pair trades |
 | **Win Rate** | `N/A (0 closed)` | Percentage of closed trades with net profit > $0 |
 | **Profit Factor** | `N/A (0 closed)` | Gross realized profits divided by gross losses |
 | **Total Realized PnL** | `$0.00` | Cumulative profit/loss from closed trades |
 | **Average PnL per Trade** | `N/A` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `N/A` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.8741` \| `+3.5631` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
-| **Latest VIX (Regime Filter)** | `21.15` | Circuit breaker halts trading above `30.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.6765` \| `+2.2488` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest VIX (Regime Filter)** | `20.83` | Circuit breaker halts trading above `30.00` |
 
 ---
 
