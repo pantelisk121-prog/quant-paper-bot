@@ -5,10 +5,10 @@
 | Metric | Value | Notes |
 | :--- | :--- | :--- |
 | **Starting Capital** | `$10,000.00` | Baseline paper-trading allocation |
-| **Current Total Equity** | `$9,685.38` | Mark-to-market portfolio value |
-| **Cumulative Return** | `-3.15%` | Net return including open positions & slippage |
+| **Current Total Equity** | `$9,682.47` | Mark-to-market portfolio value |
+| **Cumulative Return** | `-3.18%` | Net return including open positions & slippage |
 | **Max Drawdown** | `-4.09%` | Largest peak-to-trough equity decline |
-| **Annualized Sharpe Ratio** | `-3.18` | Risk-adjusted return (4.0% risk-free benchmark) |
+| **Annualized Sharpe Ratio** | `-3.21` | Risk-adjusted return (4.0% risk-free benchmark) |
 | **Daily Snapshots Logged** | `50` | Trading days tracked in `daily_performance.csv` |
 | **Total Closed Trades** | `0` | Completed round-trip pair trades |
 | **Win Rate** | `N/A (0 closed)` | Percentage of closed trades with net profit > $0 |
@@ -16,7 +16,7 @@
 | **Total Realized PnL** | `$0.00` | Cumulative profit/loss from closed trades |
 | **Average PnL per Trade** | `N/A` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `N/A` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-1.5111` \| `+3.6329` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-1.5323` \| `+3.6396` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
 | **Latest VIX (Regime Filter)** | `16.61` | Circuit breaker halts trading above `30.00` |
 
 ---
