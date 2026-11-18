@@ -1,23 +1,23 @@
 # Quantitative Portfolio Performance & Trade Log
-*Last Updated: `2026-11-16`*
+*Last Updated: `2026-11-17`*
 
 ## 1. Overall Portfolio & Strategy Statistics
 | Metric | Value | Notes |
 | :--- | :--- | :--- |
 | **Starting Capital** | `$10,000.00` | Baseline paper-trading allocation |
-| **Current Total Equity** | `$9,761.08` | Mark-to-market portfolio value |
-| **Cumulative Return** | `-2.39%` | Net return including open positions & slippage |
+| **Current Total Equity** | `$9,767.23` | Mark-to-market portfolio value |
+| **Cumulative Return** | `-2.33%` | Net return including open positions & slippage |
 | **Max Drawdown** | `-4.16%` | Largest peak-to-trough equity decline |
-| **Annualized Sharpe Ratio** | `-1.59` | Risk-adjusted return (4.0% risk-free benchmark) |
-| **Daily Snapshots Logged** | `58` | Trading days tracked in `daily_performance.csv` |
+| **Annualized Sharpe Ratio** | `-1.55` | Risk-adjusted return (4.0% risk-free benchmark) |
+| **Daily Snapshots Logged** | `59` | Trading days tracked in `daily_performance.csv` |
 | **Total Closed Trades** | `2` | Completed round-trip pair trades |
 | **Win Rate** | `50.00%` | Percentage of closed trades with net profit > $0 |
 | **Profit Factor** | `0.43` | Gross realized profits divided by gross losses |
 | **Total Realized PnL** | `$-61.84` | Cumulative profit/loss from closed trades |
 | **Average PnL per Trade** | `$-30.92` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `16.5 days` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.3486` \| `+1.8896` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
-| **Latest VIX (Regime Filter)** | `22.91` | Circuit breaker halts trading above `30.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.7672` \| `+1.6674` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest VIX (Regime Filter)** | `25.46` | Circuit breaker halts trading above `30.00` |
 
 ---
 
