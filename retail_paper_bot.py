@@ -13,8 +13,9 @@ PAIR_NAMES = [f"{s1}_{s2}" for s1, s2 in PAIRS]
 Z_ENTRY = 1.75
 Z_EXIT = 0.50
 Z_STOP = 4.0
-VIX_MAX = 30.0
-SLIPPAGE = 0.0005  # 0.05% friction
+VIX_MAX = 30.0             # Liquidate pairs and rotate 100% into SPY above this level
+VIX_REENTRY = 25.0         # Exit SPY and resume pairs trading once VIX cools to/below this level
+SLIPPAGE = 0.0005          # 0.05% friction
 LOOKBACK = 60
 INITIAL_CAPITAL = 10000.0  # Matches 10,000 USD baseline
 MAX_PROFIT_HOLD_DAYS = 15  # Require pnl > 0 at Z_EXIT for first 15 calendar days
@@ -118,7 +119,6 @@ def fetch_single_close(ticker_symbol):
 
     if needs_intraday:
         try:
-            # Pull un-cached 5-minute intraday bars to get today's true 4:00 PM market close
             intraday = t.history(period="5d", interval="5m", prepost=False, auto_adjust=False)
             if not intraday.empty and 'Close' in intraday.columns:
                 intra_close = intraday['Close'].dropna()
@@ -183,195 +183,316 @@ def calculate_z_score(stock1, stock2):
     return z_score, latest_prices
 
 
+def close_pair_position(state, pair_name, prices_log, action):
+    """Fully close an open pair position, credit realized PnL to cash, and log the trade."""
+    pos = state['positions'][pair_name]
+    s1, s2, p1, p2 = prices_log[pair_name]
+
+    exit_val1 = (pos['qty1'] * p1) * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
+    exit_val2 = (pos['qty2'] * p2) * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
+    total_exit_val = exit_val1 + exit_val2
+
+    entry_val = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
+    pnl = total_exit_val - entry_val
+
+    state['cash'] += total_exit_val
+    log_trade(pair_name, action, s1, s2, pos['qty1'], pos['qty2'], p1, p2, pnl)
+    del state['positions'][pair_name]
+    return pnl
+
+
+def compute_total_equity(state, prices_log, spy_price):
+    """Compute mark-to-market equity across cash, open pairs, and any SPY safe-haven position."""
+    equity = float(state['cash'])
+    for pair_name in PAIR_NAMES:
+        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
+            pos = state['positions'][pair_name]
+            _, _, p1, p2 = prices_log[pair_name]
+            equity += (pos['qty1'] * p1) + (pos['qty2'] * p2)
+
+    if 'SPY_POS' in state['positions'] and isinstance(state['positions']['SPY_POS'], dict):
+        equity += state['positions']['SPY_POS']['qty'] * spy_price
+
+    return equity
+
+
+def open_pair_position(state, pair_name, prices_log, z_score, allocation_weight, current_equity, market_date_str):
+    """Open a dollar-neutral pair position sized to allocation_weight * current_equity."""
+    s1, s2, p1, p2 = prices_log[pair_name]
+    allocation = current_equity * allocation_weight
+
+    print(f"  -> ENTRY Triggered for {pair_name} (Allocation: {allocation_weight*100:.1f}% -- {allocation:,.2f} USD)")
+
+    if z_score > 0:
+        w1, w2 = -0.5, 0.5  # Short s1, Long s2
+    else:
+        w1, w2 = 0.5, -0.5  # Long s1, Short s2
+
+    alloc1, alloc2 = allocation * w1, allocation * w2
+    entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
+    entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
+
+    qty1 = alloc1 / entry_p1
+    qty2 = alloc2 / entry_p2
+
+    cost = (qty1 * entry_p1) + (qty2 * entry_p2)
+    state['cash'] -= cost
+
+    state['positions'][pair_name] = {
+        'qty1': qty1,
+        'qty2': qty2,
+        'entry_price1': entry_p1,
+        'entry_price2': entry_p2,
+        'weight': allocation_weight,
+        'entry_date': market_date_str
+    }
+    log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
+
+
 def main():
-    print("Fetching VIX data...")
+    print("Fetching VIX & SPY macro data...")
     vix_series = fetch_single_close('^VIX')
+    spy_series = fetch_single_close('SPY')
+
     vix = float(vix_series.iloc[-1])
-    
-    print(f"Current VIX (Fear Factor): {vix:.2f}")
-    if vix > VIX_MAX:
-        print("VIX circuit breaker triggered (>30). Halting trading operations.")
-        return
+    spy_price = float(spy_series.iloc[-1])
+    market_date_str = str(spy_series.index[-1])
+    today_dt = ny_now()
+    market_dt = parse_date(market_date_str) or today_dt
+
+    print(f"Current VIX (Fear Factor): {vix:.2f} | SPY: {spy_price:.2f} USD (Market Date: {market_date_str})")
 
     state = load_state()
     z_scores_log = {}
     prices_log = {}
-    new_entries = []
-    today_dt = ny_now()
-    
+
     print("\n==================================================")
     print("             DAILY PAIR Z-SCORE MONITOR           ")
     print("==================================================")
-    
-    # --- PASS 1: FETCH DATA & PROCESS EXITS FIRST ---
+
+    # --- STEP 1: ALWAYS FETCH PAIR DATA & Z-SCORES FOR MONITORING / LOGGING ---
     for s1, s2 in PAIRS:
         pair_name = f"{s1}_{s2}"
         z, latest_prices = calculate_z_score(s1, s2)
         if z is None:
             continue
-            
         z_scores_log[pair_name] = z
         prices_log[pair_name] = (s1, s2, latest_prices[s1], latest_prices[s2])
-        p1, p2 = latest_prices[s1], latest_prices[s2]
-        
         print(f"  {s1} / {s2} Z-Score: {z:+.2f} -- Target: +/-{Z_ENTRY} (Dist: {abs(Z_ENTRY - abs(z)):.2f})")
-        
-        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
-            pos = state['positions'][pair_name]
-            val1 = pos['qty1'] * p1
-            val2 = pos['qty2'] * p2
-            
-            exit_val1 = val1 * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
-            exit_val2 = val2 * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
-            total_exit_val = exit_val1 + exit_val2
-            entry_val = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
-            pnl = total_exit_val - entry_val
-            
-            entry_dt = parse_date(pos.get('entry_date', '2026-10-14'))
-            days_held = (today_dt.date() - entry_dt.date()).days if entry_dt else 0
 
-            should_exit = False
-            action = None
+    # --- STEP 2: VIX MACRO CIRCUIT BREAKER & HYSTERESIS SAFE HAVEN (SPY) ---
+    in_spy = 'SPY_POS' in state['positions'] and isinstance(state['positions']['SPY_POS'], dict)
+    allow_pair_trading = True
 
-            if abs(z) >= Z_STOP:
-                should_exit = True
-                action = 'EXIT (Stop Loss)'
-            elif abs(z) <= Z_EXIT:
-                if pnl > 0:
-                    should_exit = True
-                    action = 'EXIT (Take Profit)'
-                elif days_held >= MAX_PROFIT_HOLD_DAYS:
-                    should_exit = True
-                    action = f'EXIT (Time-Capped {days_held}d)'
-                else:
-                    print(
-                        f"  -> HOLD {pair_name}: Z-Score ({z:+.2f}) <= +/-{Z_EXIT}, but Net PnL ({pnl:+.2f} USD) <= 0 "
-                        f"on Day {days_held}/{MAX_PROFIT_HOLD_DAYS}. Waiting for price convergence."
-                    )
+    if vix > VIX_MAX:
+        print(f"\n  [VIX CIRCUIT BREAKER] VIX ({vix:.2f}) > {VIX_MAX:.1f}. Activating SPY Safe Haven.")
+        allow_pair_trading = False
 
-            if should_exit:
-                print(f"  -> {action} Triggered for {pair_name} (Day {days_held} -- Net PnL: {pnl:+.2f} USD)")
-                state['cash'] += total_exit_val
-                log_trade(pair_name, action, s1, s2, pos['qty1'], pos['qty2'], p1, p2, pnl)
-                del state['positions'][pair_name]
-        else:
-            if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
-                new_entries.append(pair_name)
+        # Liquidate all open pairs back into cash
+        for pair_name in PAIR_NAMES:
+            if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
+                pnl = close_pair_position(state, pair_name, prices_log, 'EXIT (VIX Circuit Breaker)')
+                print(f"  -> Liquidated {pair_name} due to VIX > {VIX_MAX:.1f} (Net PnL: {pnl:+.2f} USD)")
 
-    open_pair_names = [
-        p for p in PAIR_NAMES
-        if p in state['positions'] and isinstance(state['positions'][p], dict)
-    ]
-
-    # --- PASS 2: SMART REBALANCE GUARD & DYNAMIC CONVICTION ALLOCATION ---
-    if new_entries and open_pair_names:
-        open_pair = open_pair_names[0]
-        pos = state['positions'][open_pair]
-        _, _, op1, op2 = prices_log[open_pair]
-        open_z = abs(z_scores_log[open_pair])
-
-        est_exit1 = (pos['qty1'] * op1) * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
-        est_exit2 = (pos['qty2'] * op2) * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
-        entry_cost = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
-        unrealized_pnl = (est_exit1 + est_exit2) - entry_cost
-
-        approved_entries = []
-        for cand_pair in new_entries:
-            cand_z = abs(z_scores_log[cand_pair])
-            if unrealized_pnl > 0 or (cand_z >= REBALANCE_MIN_Z and cand_z > open_z):
-                reason = (
-                    f"Open trade profitable ({unrealized_pnl:+.2f} USD)"
-                    if unrealized_pnl > 0
-                    else f"New abs(Z) ({cand_z:.2f}) >= {REBALANCE_MIN_Z} and > Open abs(Z) ({open_z:.2f})"
-                )
-                print(f"  -> REBALANCING APPROVED for {cand_pair}: {reason}")
-                approved_entries.append(cand_pair)
-            else:
-                print(
-                    f"  -> REBALANCING BLOCKED for {cand_pair}: {open_pair} is in drawdown ({unrealized_pnl:+.2f} USD) "
-                    f"and {cand_pair} abs(Z) ({cand_z:.2f}) fails override (requires >= {REBALANCE_MIN_Z} and > {open_z:.2f}). "
-                    f"Holding 100% in {open_pair} to avoid locking in loss."
-                )
-        new_entries = approved_entries
-
-    if new_entries:
-        active_pairs = open_pair_names + new_entries
-        total_z = sum(abs(z_scores_log[p]) for p in active_pairs)
-        
-        for open_pair in open_pair_names:
-            pos = state['positions'][open_pair]
-            s1, s2, p1, p2 = prices_log[open_pair]
-            target_weight = abs(z_scores_log[open_pair]) / total_z
-            current_weight = pos.get('weight', 1.0)
-            
-            if target_weight < current_weight:
-                keep_ratio = target_weight / current_weight
-                close_ratio = 1.0 - keep_ratio
-                print(f"  -> REBALANCING {open_pair} to {target_weight*100:.1f}% conviction weight")
-                
-                closed_qty1 = pos['qty1'] * close_ratio
-                closed_qty2 = pos['qty2'] * close_ratio
-                
-                exit_val1 = (closed_qty1 * p1) * (1 - SLIPPAGE if closed_qty1 > 0 else 1 + SLIPPAGE)
-                exit_val2 = (closed_qty2 * p2) * (1 - SLIPPAGE if closed_qty2 > 0 else 1 + SLIPPAGE)
-                total_exit_val = exit_val1 + exit_val2
-                
-                entry_val = (closed_qty1 * pos['entry_price1']) + (closed_qty2 * pos['entry_price2'])
-                pnl = total_exit_val - entry_val
-                
-                state['cash'] += total_exit_val
-                pos['qty1'] *= keep_ratio
-                pos['qty2'] *= keep_ratio
-                pos['weight'] = target_weight
-                log_trade(open_pair, 'REBALANCE (Trim)', s1, s2, closed_qty1, closed_qty2, p1, p2, pnl)
-
-        current_equity = state['cash']
-        for open_pair in open_pair_names:
-            pos = state['positions'][open_pair]
-            _, _, op1, op2 = prices_log[open_pair]
-            current_equity += (pos['qty1'] * op1) + (pos['qty2'] * op2)
-
-        for pair_name in new_entries:
-            s1, s2, p1, p2 = prices_log[pair_name]
-            z = z_scores_log[pair_name]
-            target_weight = abs(z) / total_z
-            allocation = current_equity * target_weight
-            
-            print(f"  -> ENTRY Triggered for {pair_name} (Allocation: {target_weight*100:.1f}% -- {allocation:,.2f} USD)")
-            
-            if z > 0:
-                w1, w2 = -0.5, 0.5  # Short s1, Long s2
-            else:
-                w1, w2 = 0.5, -0.5  # Long s1, Short s2
-                
-            alloc1, alloc2 = allocation * w1, allocation * w2
-            
-            entry_p1 = p1 * (1 + SLIPPAGE if w1 > 0 else 1 - SLIPPAGE)
-            entry_p2 = p2 * (1 + SLIPPAGE if w2 > 0 else 1 - SLIPPAGE)
-            
-            qty1 = alloc1 / entry_p1
-            qty2 = alloc2 / entry_p2
-            
-            cost = (qty1 * entry_p1) + (qty2 * entry_p2)
-            state['cash'] -= cost
-            
-            state['positions'][pair_name] = {
-                'qty1': qty1,
-                'qty2': qty2,
-                'entry_price1': entry_p1,
-                'entry_price2': entry_p2,
-                'weight': target_weight,
-                'entry_date': today_dt.strftime('%Y-%m-%d')
+        # Deploy 100% of cash into SPY if not already holding SPY
+        if not in_spy and state['cash'] > 0:
+            spy_entry_price = spy_price * (1 + SLIPPAGE)
+            spy_qty = state['cash'] / spy_entry_price
+            invested_cash = state['cash']
+            state['cash'] = 0.0
+            state['positions']['SPY_POS'] = {
+                'qty': spy_qty,
+                'entry_price': spy_entry_price,
+                'entry_date': market_date_str
             }
-            log_trade(pair_name, 'ENTRY', s1, s2, qty1, qty2, entry_p1, entry_p2, 0.0)
+            log_trade('SPY_HEDGE', 'ENTRY (VIX Safe Haven)', 'SPY', 'CASH', spy_qty, 0.0, spy_entry_price, 0.0, 0.0)
+            print(f"  -> Deployed {invested_cash:,.2f} USD into SPY: {spy_qty:.4f} shares @ {spy_entry_price:.2f} USD")
+            in_spy = True
+        elif in_spy:
+            print(f"  -> Holding SPY Safe Haven ({state['positions']['SPY_POS']['qty']:.4f} shares) while VIX > {VIX_REENTRY:.1f}.")
+
+    elif in_spy and vix > VIX_REENTRY:
+        print(f"\n  [VIX HYSTERESIS HOLD] VIX ({vix:.2f}) > {VIX_REENTRY:.1f} re-entry threshold. Holding SPY Safe Haven.")
+        allow_pair_trading = False
+
+    elif in_spy and vix <= VIX_REENTRY:
+        spy_pos = state['positions']['SPY_POS']
+        spy_exit_price = spy_price * (1 - SLIPPAGE)
+        exit_val = spy_pos['qty'] * spy_exit_price
+        entry_val = spy_pos['qty'] * spy_pos['entry_price']
+        pnl = exit_val - entry_val
+        state['cash'] += exit_val
+        log_trade('SPY_HEDGE', 'EXIT (VIX Cooldown)', 'SPY', 'CASH', spy_pos['qty'], 0.0, spy_exit_price, 0.0, pnl)
+        del state['positions']['SPY_POS']
+        in_spy = False
+        print(f"\n  [VIX COOLDOWN] VIX ({vix:.2f}) <= {VIX_REENTRY:.1f}. Exited SPY @ {spy_exit_price:.2f} USD (Net PnL: {pnl:+.2f} USD). Resuming pairs trading.")
+
+    # --- STEP 3: NORMAL PAIRS TRADING (EXITS, CASH-FIRST ALLOCATION & Z-WEIGHTED REBALANCING) ---
+    if allow_pair_trading:
+        new_entries = []
+
+        # PASS 1: Process Exits & Collect New Entry Candidates
+        for pair_name in PAIR_NAMES:
+            if pair_name not in z_scores_log:
+                continue
+
+            z = z_scores_log[pair_name]
+            s1, s2, p1, p2 = prices_log[pair_name]
+
+            if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict):
+                pos = state['positions'][pair_name]
+                exit_val1 = (pos['qty1'] * p1) * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
+                exit_val2 = (pos['qty2'] * p2) * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
+                total_exit_val = exit_val1 + exit_val2
+                entry_val = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
+                pnl = total_exit_val - entry_val
+
+                entry_dt = parse_date(pos.get('entry_date', '2026-10-14'))
+                days_held = (market_dt.date() - entry_dt.date()).days if entry_dt else 0
+
+                should_exit = False
+                action = None
+
+                if abs(z) >= Z_STOP:
+                    should_exit = True
+                    action = 'EXIT (Stop Loss)'
+                elif abs(z) <= Z_EXIT:
+                    if pnl > 0:
+                        should_exit = True
+                        action = 'EXIT (Take Profit)'
+                    elif days_held >= MAX_PROFIT_HOLD_DAYS:
+                        should_exit = True
+                        action = f'EXIT (Time-Capped {days_held}d)'
+                    else:
+                        print(
+                            f"  -> HOLD {pair_name}: Z-Score ({z:+.2f}) <= +/-{Z_EXIT}, but Net PnL ({pnl:+.2f} USD) <= 0 "
+                            f"on Day {days_held}/{MAX_PROFIT_HOLD_DAYS}. Waiting for price convergence."
+                        )
+
+                if should_exit:
+                    realized_pnl = close_pair_position(state, pair_name, prices_log, action)
+                    print(f"  -> {action} Triggered for {pair_name} (Day {days_held} -- Net PnL: {realized_pnl:+.2f} USD)")
+            else:
+                if abs(z) >= Z_ENTRY and abs(z) < Z_STOP:
+                    new_entries.append(pair_name)
+
+        open_pair_names = [
+            p for p in PAIR_NAMES
+            if p in state['positions'] and isinstance(state['positions'][p], dict)
+        ]
+
+        # PASS 2: Cash-First, Z-Score-Weighted Dynamic Conviction Allocation
+        if new_entries:
+            if not open_pair_names:
+                # 100% free capital: allocate across all new entries strictly by Z-score weight
+                current_equity = compute_total_equity(state, prices_log, spy_price)
+                total_z = sum(abs(z_scores_log[p]) for p in new_entries)
+                for pair_name in new_entries:
+                    target_weight = abs(z_scores_log[pair_name]) / total_z
+                    open_pair_position(
+                        state, pair_name, prices_log, z_scores_log[pair_name],
+                        target_weight, current_equity, market_date_str
+                    )
+            else:
+                # One pair is already open; evaluate free cash first, then Z-score-weighted trim if needed
+                open_pair = open_pair_names[0]
+                cand_pair = new_entries[0]
+
+                pos = state['positions'][open_pair]
+                os1, os2, op1, op2 = prices_log[open_pair]
+                open_z = abs(z_scores_log[open_pair])
+                cand_z = abs(z_scores_log[cand_pair])
+
+                current_weight_open = float(pos.get('weight', 1.0))
+                free_weight = max(0.0, 1.0 - current_weight_open)
+
+                total_z = open_z + cand_z
+                target_weight_cand = cand_z / total_z
+                target_weight_open = open_z / total_z
+
+                # Exact shortfall beyond available idle cash (e.g., needs 70% - 40% cash = 30% trim)
+                trim_needed_equity_pct = max(0.0, target_weight_cand - free_weight)
+
+                est_exit1 = (pos['qty1'] * op1) * (1 - SLIPPAGE if pos['qty1'] > 0 else 1 + SLIPPAGE)
+                est_exit2 = (pos['qty2'] * op2) * (1 - SLIPPAGE if pos['qty2'] > 0 else 1 + SLIPPAGE)
+                entry_cost = (pos['qty1'] * pos['entry_price1']) + (pos['qty2'] * pos['entry_price2'])
+                unrealized_pnl = (est_exit1 + est_exit2) - entry_cost
+
+                cand_alloc_weight = 0.0
+
+                if trim_needed_equity_pct <= 1e-6:
+                    # Free cash completely covers the new pair's Z-score-weighted target — zero trim needed
+                    cand_alloc_weight = target_weight_cand
+                    print(
+                        f"  -> CASH-ONLY ENTRY for {cand_pair}: Free cash ({free_weight*100:.1f}%) covers "
+                        f"Z-weighted target ({target_weight_cand*100:.1f}%). {open_pair} untouched at {current_weight_open*100:.1f}%."
+                    )
+                else:
+                    # Shortfall requires trimming open_pair; check Smart Rebalance Guard
+                    trim_approved = unrealized_pnl > 0 or (cand_z >= REBALANCE_MIN_Z and cand_z > open_z)
+                    if trim_approved:
+                        reason = (
+                            f"Open trade profitable ({unrealized_pnl:+.2f} USD)"
+                            if unrealized_pnl > 0
+                            else f"New abs(Z) ({cand_z:.2f}) >= {REBALANCE_MIN_Z} and > Open abs(Z) ({open_z:.2f})"
+                        )
+                        print(
+                            f"  -> REBALANCING APPROVED for {cand_pair}: {reason}. "
+                            f"Using {free_weight*100:.1f}% free cash + {trim_needed_equity_pct*100:.1f}% equity trim "
+                            f"from {open_pair} for {target_weight_cand*100:.1f}% total Z-weighted allocation."
+                        )
+
+                        # Trim exact shortfall from open_pair's current weight
+                        close_ratio = min(1.0, trim_needed_equity_pct / current_weight_open)
+                        keep_ratio = 1.0 - close_ratio
+
+                        closed_qty1 = pos['qty1'] * close_ratio
+                        closed_qty2 = pos['qty2'] * close_ratio
+
+                        exit_val1 = (closed_qty1 * op1) * (1 - SLIPPAGE if closed_qty1 > 0 else 1 + SLIPPAGE)
+                        exit_val2 = (closed_qty2 * op2) * (1 - SLIPPAGE if closed_qty2 > 0 else 1 + SLIPPAGE)
+                        total_exit_val = exit_val1 + exit_val2
+
+                        entry_val = (closed_qty1 * pos['entry_price1']) + (closed_qty2 * pos['entry_price2'])
+                        pnl = total_exit_val - entry_val
+
+                        state['cash'] += total_exit_val
+                        pos['qty1'] *= keep_ratio
+                        pos['qty2'] *= keep_ratio
+                        pos['weight'] = target_weight_open
+
+                        log_trade(open_pair, 'REBALANCE (Trim)', os1, os2, closed_qty1, closed_qty2, op1, op2, pnl)
+                        cand_alloc_weight = target_weight_cand
+                    elif free_weight > 0.01:
+                        # Trim blocked to avoid locking in a loss, but deploy idle free cash into cand_pair
+                        cand_alloc_weight = free_weight
+                        print(
+                            f"  -> PARTIAL TRIM BLOCKED ({open_pair} underwater at {unrealized_pnl:+.2f} USD and "
+                            f"{cand_pair} abs(Z)={cand_z:.2f} fails override). Deploying available {free_weight*100:.1f}% "
+                            f"free cash into {cand_pair} while leaving {open_pair} untouched at {current_weight_open*100:.1f}%."
+                        )
+                    else:
+                        print(
+                            f"  -> REBALANCING BLOCKED for {cand_pair}: {open_pair} is in drawdown ({unrealized_pnl:+.2f} USD) "
+                            f"with no idle cash, and {cand_pair} abs(Z) ({cand_z:.2f}) fails override "
+                            f"(requires >= {REBALANCE_MIN_Z} and > {open_z:.2f}). Holding 100% in {open_pair}."
+                        )
+
+                if cand_alloc_weight > 1e-6:
+                    current_equity = compute_total_equity(state, prices_log, spy_price)
+                    open_pair_position(
+                        state, cand_pair, prices_log, z_scores_log[cand_pair],
+                        cand_alloc_weight, current_equity, market_date_str
+                    )
 
     print("==================================================\n")
 
+    # --- STEP 4: SYNC STATE, MARK TO MARKET & LOG DAILY PERFORMANCE ---
     hd_shares = state['positions'].get('HD_LOW', {}).get('qty1', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
     low_shares = state['positions'].get('HD_LOW', {}).get('qty2', 0.0) if isinstance(state['positions'].get('HD_LOW'), dict) else 0.0
     wmt_shares = state['positions'].get('WMT_TGT', {}).get('qty1', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
     tgt_shares = state['positions'].get('WMT_TGT', {}).get('qty2', 0.0) if isinstance(state['positions'].get('WMT_TGT'), dict) else 0.0
-    spy_shares = 0.0
+    spy_shares = state['positions'].get('SPY_POS', {}).get('qty', 0.0) if isinstance(state['positions'].get('SPY_POS'), dict) else 0.0
 
     state['positions']['HD'] = round(float(hd_shares), 4)
     state['positions']['LOW'] = round(float(low_shares), 4)
@@ -385,17 +506,11 @@ def main():
             if 'entry_date' not in state['positions'][pair_name]:
                 state['positions'][pair_name]['entry_date'] = '2026-10-14'
 
-    portfolio_value = state['cash']
-    for pair_name in PAIR_NAMES:
-        if pair_name in state['positions'] and isinstance(state['positions'][pair_name], dict) and pair_name in prices_log:
-            pos = state['positions'][pair_name]
-            _, _, p1, p2 = prices_log[pair_name]
-            portfolio_value += (pos['qty1'] * p1) + (pos['qty2'] * p2)
-
+    portfolio_value = compute_total_equity(state, prices_log, spy_price)
     save_state(state)
 
     log_entry = {
-        'date': today_dt.strftime('%Y-%m-%d'),
+        'date': market_date_str,
         'total_equity': round(float(portfolio_value), 2),
         'cash': round(float(state['cash']), 2),
         'HD_Shares': round(float(hd_shares), 4),
@@ -407,17 +522,17 @@ def main():
         'z_wmt_tgt': round(float(z_scores_log.get('WMT_TGT', 0.0)), 4),
         'vix': round(float(vix), 2)
     }
-    
+
     if os.path.exists(PERF_FILE):
         perf_df = pd.read_csv(PERF_FILE)
         perf_df = pd.concat([perf_df, pd.DataFrame([log_entry])], ignore_index=True)
     else:
         perf_df = pd.DataFrame([log_entry])
-        
+
     perf_df.drop_duplicates(subset=['date'], keep='last', inplace=True)
     perf_df.to_csv(PERF_FILE, index=False)
-    
-    print(f"Daily execution complete. Total Portfolio Value: {portfolio_value:,.2f} USD")
+
+    print(f"Daily execution complete ({market_date_str}). Total Portfolio Value: {portfolio_value:,.2f} USD")
 
 
 if __name__ == "__main__":
