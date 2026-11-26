@@ -1,25 +1,25 @@
 # Quantitative Portfolio Performance & Trade Log
-*Last Updated: `2026-11-24`*
+*Last Updated: `2026-11-25`*
 
 ## 1. Overall Portfolio & Strategy Statistics
 | Metric | Value | Notes |
 | :--- | :--- | :--- |
 | **Starting Capital** | `$10,000.00` | Baseline paper-trading allocation |
-| **Current Total Equity** | `$10,261.13` | Mark-to-market portfolio value |
-| **Cumulative Return** | `+2.61%` | Net return including open positions & slippage |
-| **Annualized Return (CAGR)** | `+10.68%` | Annualized over 64 active trading days (252-day basis) |
+| **Current Total Equity** | `$10,231.44` | Mark-to-market portfolio value |
+| **Cumulative Return** | `+2.31%` | Net return including open positions & slippage |
+| **Annualized Return (CAGR)** | `+9.28%` | Annualized over 65 active trading days (252-day basis) |
 | **Max Drawdown** | `-4.16%` | Largest peak-to-trough equity decline |
-| **Annualized Sharpe Ratio** | `0.55` | Risk-adjusted return (4.0% risk-free benchmark) |
-| **Daily Snapshots Logged** | `64` | Trading days tracked in `daily_performance.csv` |
+| **Annualized Sharpe Ratio** | `0.45` | Risk-adjusted return (4.0% risk-free benchmark) |
+| **Daily Snapshots Logged** | `65` | Trading days tracked in `daily_performance.csv` |
 | **Total Closed Trades** | `3` | Completed round-trip trades (including trims & hedges) |
 | **Win Rate** | `33.33%` | Percentage of closed trades with net profit > $0 |
 | **Profit Factor** | `0.24` | Gross realized profits divided by gross losses |
 | **Total Realized PnL** | `$-147.52` | Cumulative profit/loss from closed trades |
-| **Current Unrealized PnL** | `$+408.65` | Mark-to-market open profit/loss across active positions |
+| **Current Unrealized PnL** | `$+378.96` | Mark-to-market open profit/loss across active positions |
 | **Average PnL per Trade** | `$-49.17` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `23.3 days` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.4084` \| `+0.7395` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
-| **Latest VIX (Regime Filter)** | `26.36` | Rotates to `SPY` above `30.00`; resumes pairs at `<= 25.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.1085` \| `+0.7493` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest VIX (Regime Filter)** | `28.29` | Rotates to `SPY` above `30.00`; resumes pairs at `<= 25.00` |
 
 ---
 
@@ -35,4 +35,4 @@
 ## 3. Currently Open Positions
 | Pair / Asset | Direction | Entry Date | Days Open | Shares | Entry Price(s) | Current Status |
 | :---: | :--- | :---: | :---: | :---: | :---: | :---: |
-| **SPY HEDGE** | Long SPY (VIX Safe Haven) | `2026-11-20` | 4 | `14.2758` SPY | $690.15 | **OPEN (VIX Safe Haven)** |
+| **SPY HEDGE** | Long SPY (VIX Safe Haven) | `2026-11-20` | 5 | `14.2758` SPY | $690.15 | **OPEN (VIX Safe Haven)** |
