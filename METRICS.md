@@ -18,7 +18,7 @@
 | **Current Unrealized PnL** | `$+0.00` | Mark-to-market open profit/loss across active positions |
 | **Average PnL per Trade** | `$+89.47` | Mean realized profit/loss per closed trade |
 | **Average Hold Duration** | `19.2 days` | Mean calendar days from entry to exit |
-| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.2675` \| `+0.7084` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
+| **Latest Z-Scores (HD/LOW \| WMT/TGT)** | `-0.1409` \| `+0.7371` | Entry: `±1.75` \| Exit: `±0.50` \| Stop: `±4.00` |
 | **Latest VIX (Regime Filter)** | `23.81` | Rotates to `SPY` above `30.00`; resumes pairs at `<= 25.00` |
 
 ---
